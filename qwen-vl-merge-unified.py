@@ -392,7 +392,10 @@ def build_arch_config(arch, ref_fields, mmproj_fields):
 
         # --- General metadata ---
         writer.add_uint64("general.parameter_count", int(_read_scalar(ref, "general.parameter_count")))  # blob
-        writer.add_uint32("general.file_type",        int(_read_scalar(ref, "general.file_type")))        # blob
+        _ft = (int(_read_scalar(llm_fields, "general.file_type"))
+               if "general.file_type" in llm_fields else 32)
+        writer.add_uint32("general.file_type", _ft)  # llm
+        #writer.add_uint32("general.file_type",        int(_read_scalar(ref, "general.file_type")))        # blob
 
     # Wire up the correct inject function
     if a == "qwen35":

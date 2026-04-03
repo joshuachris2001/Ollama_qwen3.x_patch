@@ -32,6 +32,11 @@ Usage
       --mmproj      mmproj.gguf \\
       [--output     merged_qwen.gguf]
 
+  --blob is required for qwen35 (many values are read from it dynamically).
+  For qwen3vl and qwen3vlmoe all architecture values are hardcoded, so
+  --blob is optional; omit it and the chat template is read from the LLM
+  GGUF directly (preferred — finetuners often modify it).
+
   If --output is omitted the file is written as merged_qwen.gguf in the
   current working directory.
 """
@@ -64,14 +69,17 @@ def parse_args():
     )
     p.add_argument(
         "--blob", "-b",
-        required=True,
+        required=False,
+        default=None,
         metavar="PATH",
         help=(
             "Path to the official Ollama base-model blob for this architecture. "
             "Architecture-critical KV values (mrope sections, vision edge limits, "
             "token IDs, head counts) are read from this file so the merged output "
             "matches what Ollama has already validated. "
-            "Example: /var/lib/ollama/blobs/sha256-81fb60..."
+            "Example: /var/lib/ollama/blobs/sha256-81fb60... "  
+            "Required for qwen35. Optional for qwen3vl and qwen3vlmoe — "
+            "if omitted the chat template is read from the LLM GGUF instead."
         ),
     )
     p.add_argument(
@@ -224,7 +232,7 @@ def build_arch_config(arch, ref_fields, mmproj_fields):
       arch_name     — string written to general.architecture
       kv_drop       — set of KV keys to suppress during passthrough
       kv_renames    — dict mapping mmproj clip.* keys → <arch>.vision.* keys
-      inject_kv()   — callable(writer, ref, mmproj_fields) that writes all
+      inject_kv()   — callable(writer, ref, mmproj_fields, llm_fields) that writes all
                       manually controlled KV fields into writer
       llm_renames   — dict of per-layer tensor name fixes (may be empty)
     """
@@ -306,7 +314,7 @@ def build_arch_config(arch, ref_fields, mmproj_fields):
     # Per-architecture inject_kv() implementations
     # -----------------------------------------------------------------------
 
-    def inject_kv_qwen3vl(writer, ref, mf):
+    def inject_kv_qwen3vl(writer, ref, mf, llm_fields):
         """
         Inject KV fields that are absent from both the LLM and mmproj sources,
         or that must be overridden for the merged file to load correctly.
@@ -324,13 +332,15 @@ def build_arch_config(arch, ref_fields, mmproj_fields):
         writer.add_bool("tokenizer.ggml.add_eos_token",         False)
         writer.add_bool("tokenizer.ggml.add_padding_token",     False)
         writer.add_array("tokenizer.ggml.eos_token_ids",        [151645, 151643])
-        # file_type 32 = mixed-precision (F16 + quantized); blob stores 15 which
-        # is wrong for merged files that contain quantized LLM tensors
-        _ft = (int(_read_scalar(llm.fields, "general.file_type"))
-               if "general.file_type" in llm.fields else 32)
-        writer.add_uint32("general.file_type", _ft) # report the correct quant
+        # general.file_type must match the actual LLM tensor format so tools
+        # like ollama show and llama-gguf-split report the correct quant type.
+        # Read it from the LLM GGUF directly (same fix as qwen35); fall back to
+        # 32 (mixed-precision F16 + quantized) only if the field is absent.
+        _ft = (int(_read_scalar(llm_fields, "general.file_type"))
+               if "general.file_type" in llm_fields else 32)
+        writer.add_uint32("general.file_type", _ft)          # llm
 
-    def inject_kv_qwen35(writer, ref, mf):
+    def inject_kv_qwen35(writer, ref, mf, llm_fields):
         """
         Inject KV fields for qwen35. Architecture-critical values (mrope, vision
         edges, token IDs, head counts) are sourced from the official Ollama blob
@@ -558,14 +568,21 @@ def stack_patch_embed(vision_tensors, mmproj, vit_hidden):
 def main():
     args = parse_args()
 
-    # Validate paths before doing any real work
+    # Validate paths before doing any real work.
+    # --blob is required for qwen35 (values are read from it dynamically).
+    # For qwen3vl / qwen3vlmoe it is optional; the chat template comes from the LLM.
+    if args.model_type == "qwen35" and not args.blob:
+        sys.exit("ERROR: --blob is required for model type 'qwen35'")
+
     for label, path in [
-        ("blob",   args.blob),
         ("LLM",    args.llm),
         ("mmproj", args.mmproj),
     ]:
         if not os.path.exists(path):
             sys.exit(f"ERROR: {label} path does not exist: {path}")
+
+    if args.blob and not os.path.exists(args.blob):
+        sys.exit(f"ERROR: blob path does not exist: {args.blob}")
 
     print(f"Model type : {args.model_type}")
     print(f"Blob       : {args.blob}")
@@ -575,20 +592,28 @@ def main():
     print()
 
     # ------------------------------------------------------------------
-    # 1. Load reference blob — source of architecture-critical KV values
+    # 1. Load reference blob (required for qwen35, optional for qwen3vl/qwen3vlmoe)
     # ------------------------------------------------------------------
-    print("Loading reference blob...")
-    ref       = GGUFReader(args.blob)
-    ref_fields = ref.fields
+    if args.blob:
+        print("Loading reference blob...")
+        ref        = GGUFReader(args.blob)
+        ref_fields = ref.fields
+        tmpl_field = ref_fields["tokenizer.chat_template"]
+        official_chat_template = bytes(tmpl_field.parts[tmpl_field.data[0]]).decode("utf-8")
+        print(f"  chat template: {len(official_chat_template)} chars")
+    else:
+        # No blob provided — qwen3vl / qwen3vlmoe only.
+        # All injected values for those architectures are hardcoded, so the blob
+        # is not needed. The chat template will be sourced from the LLM below.
+        ref        = None
+        ref_fields = None
+        official_chat_template = None
+        print("No blob provided — all KV values will be hardcoded (qwen3vl/qwen3vlmoe).")
 
-    # Read and print the chat template length as a basic sanity check
-    tmpl_field = ref_fields["tokenizer.chat_template"]
-    official_chat_template = bytes(tmpl_field.parts[tmpl_field.data[0]]).decode("utf-8")
-    print(f"  chat template: {len(official_chat_template)} chars")
-
-    # Build the architecture config (KV maps, inject function, LLM renames)
+    # Build the architecture config (KV maps, inject function, LLM renames).
+    # ref_fields may be None here for qwen3vl/qwen3vlmoe without a blob; that is
+    # safe because inject_kv_qwen3vl() never reads from it.
     arch_cfg = build_arch_config(args.model_type, ref_fields, None)
-    # (ref_fields kept alive; arch_cfg.inject_kv() will reference it via closure)
 
     # ------------------------------------------------------------------
     # 2. Load mmproj — read vision encoder dimensions before processing tensors
@@ -636,14 +661,21 @@ def main():
 
     # Prefer the finetuned model's own chat template when present — fine-tuners
     # often modify the template to reflect instruction-following changes.
-    # Fall back to the official blob's template only if the LLM has none.
+    # Fall back to the blob's template if the LLM has none (and a blob was given).
+    # If neither source has a template, abort with a clear error.
     if "tokenizer.chat_template" in llm.fields:
         f = llm.fields["tokenizer.chat_template"]
         chat_template = bytes(f.parts[f.data[0]]).decode("utf-8")
-        print(f"  Using finetuned chat template ({len(chat_template)} chars)")
-    else:
+        print(f"  Using LLM chat template ({len(chat_template)} chars)")
+    elif official_chat_template is not None:
         chat_template = official_chat_template
-        print("  WARNING: LLM has no chat template — falling back to official blob")
+        print("  WARNING: LLM has no chat template — falling back to blob template")
+    else:
+        sys.exit(
+            "ERROR: No chat template found. The LLM GGUF does not carry one and "
+            "no --blob was provided to fall back to. Re-run with --blob, or use "
+            "a model that includes tokenizer.chat_template."
+        )
 
     # Carry the LLM's quantization_version into the output so downstream tools
     # know which quantization scheme was applied to the LLM tensors
@@ -684,7 +716,7 @@ def main():
 
     # Inject architecture-critical KV fields with verified values
     print("Injecting controlled KV fields...")
-    arch_cfg["inject_kv"](writer, ref_fields, mf)
+    arch_cfg["inject_kv"](writer, ref_fields, mf, llm.fields)
 
     # Re-inject fields that require values from multiple sources
     writer.add_string("tokenizer.chat_template", chat_template)

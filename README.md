@@ -16,7 +16,7 @@ Not completely required for Qwen3-VL models as most of it was hardcoded from tak
 You can get the model BLOB by downloading the qwen3.5 model size for the base model and looking at the resulting modelfile.
 
 ### What's in `advanced/` and `prototype/`?
-- **`advanced/`** — contains a reference shell script (`qwen-3-VL-Ollama_tuned_vission_quant.sh`) that documents exactly how the Ollama team quantizes the Qwen3-VL vision encoder. It uses `llama-quantize` with per-layer `--tensor-type` overrides, applying a mixed Q8_0/Q5_0 scheme to each `attn_v` block across all 27 vision layers, then quantizes the rest as F16. Useful if you want your merged mmproj to match Ollama's official quantization quality as closely as possible.
+- **`advanced/`** — contains a reference shell script (`qwen-3-VL-Ollama_tuned_vission_quant.sh`) that documents approximately how the Ollama team quantizes the Qwen3-VL vision encoder. It uses `llama-quantize` with per-layer `--tensor-type` overrides, applying a mixed Q8_0/Q5_0 scheme to each `attn_v` block across all 27 vision layers, then quantizes the rest as F16. Useful if you want your merged mmproj to match Ollama's official quantization quality as closely as possible.
 - **`prototype/`** — the original per-architecture scripts (`Qwen3-VL-merge.py`, `Qwen3-VL-MOE-merge.py`, `Qwen3.5-merge.py`) that the unified program evolved from. Useful as a reference for understanding the R&D lineage.
 
 ## Preparation

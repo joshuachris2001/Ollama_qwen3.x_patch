@@ -52,7 +52,7 @@ from gguf import GGUFReader, GGUFWriter, GGUFValueType, GGMLQuantizationType
 # CLI
 # ---------------------------------------------------------------------------
 
-SUPPORTED_TYPES = ("qwen3vl", "qwen3vlmoe", "qwen35")
+SUPPORTED_TYPES = ("qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe")
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -279,7 +279,7 @@ def build_arch_config(arch, ref_fields, mmproj_fields):
     if a in ("qwen3vl", "qwen3vlmoe"):
         common_kv_renames[f"clip.vision.image_size"] = f"{a}.vision.image_size"
 
-    if a == "qwen35":
+    if a in ("qwen35", "qwen35moe"):
         # qwen35 reads edge limits from the blob, so drop them from passthrough
         # and re-inject them in inject_kv().
         extra_drop = {

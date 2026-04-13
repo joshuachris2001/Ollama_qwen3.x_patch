@@ -2,7 +2,7 @@
 Why? Because it is difficult to add future models; so a complete restructuring is needed.
 The goal is to make a modular platform where I will not have spaghetti code in one file. 🍝 
 
-Most of the work is done and 100% supports Gemma4 multimodal gguf models. better yet, this project perhaps get a complete rebrand in the progress. 
+Most of the work is done and 100% supports Gemma4 multimodal gguf models. better yet, this project perhaps get a complete rebrand in the progress. 繋
 
 
 # Qwen3.x GGUF vision patcher

@@ -46,7 +46,7 @@ def discover_models() -> dict[str, type[BaseModelCore]]:
         if fname in ("__init__.py", "base.py", "qwen_base.py"):
             continue
 
-        module_name = f"ModelCores.{fname[:-3]}"
+        module_name = f"{__package__}.{fname[:-3]}"
         try:
             mod = importlib.import_module(module_name)
         except Exception as exc:

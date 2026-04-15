@@ -25,8 +25,31 @@ You can get the needed model BLOB by downloading the model size for that particu
 **This is important:** _For most cases the model of the finetuned model you have needs to be the same as the Ollama GGUF BLOB._
 
 ## Preparation
-In your Python environment you should have `gguf` installed. I also included `tqdm` for progress bars; we also need `numpy` to handle the arrays.
+
+### Recommended: Install via PyPI
+
+The easiest way to get started. Dependencies are managed automatically — no manual installs needed.
+
+**Run directly without installing (uvx):**
+```bash
+uvx tsunagi-ollama-bridge
 ```
+
+**Install as a persistent command:**
+```bash
+uv tool install tsunagi-ollama-bridge
+tsuangi-ollama --help
+```
+
+**Classic pip install:**
+```bash
+pip install tsunagi-ollama-bridge
+```
+
+### Manual / Development Install
+
+If you are running from source, install dependencies manually:
+```bash
 pip install gguf tqdm numpy
 ```
 
@@ -62,7 +85,7 @@ The program has 3–4 important arguments.
 
 **Qwen3-VL finetune (no blob needed):**
 ```bash
-python OllamaGGUFMerge.py \
+tsuangi-ollama \
     --model-type qwen3vl \
     --llm    my-finetune.Q5_K_M.gguf \
     --mmproj mmproj.gguf \
@@ -71,7 +94,7 @@ python OllamaGGUFMerge.py \
 
 **Qwen3-VL-MOE finetune (no blob needed):**
 ```bash
-python OllamaGGUFMerge.py \
+tsuangi-ollama \
     --model-type qwen3vlmoe \
     --llm    my-finetune.Q4_K_M.gguf \
     --mmproj mmproj.gguf \
@@ -80,7 +103,7 @@ python OllamaGGUFMerge.py \
 
 **Qwen3.5 finetune (blob required):**
 ```bash
-python OllamaGGUFMerge.py \
+tsuangi-ollama \
     --model-type qwen35 \
     --blob   /var/lib/ollama/blobs/sha256-81fb60... \
     --llm    my-finetune.Q6_K.gguf \

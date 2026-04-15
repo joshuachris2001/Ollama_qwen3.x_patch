@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tsunagi-ollama-bridge"
-version = "1.0.1"
+version = "1.0.2"
 description = "Modular GGUF patching tool for Ollama multimodal monoliths"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 tsunagi-ollama = "tsunagi_ollama_bridge.main:main"
+tsunagi-ollama-bridge = "tsunagi_ollama_bridge.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tsunagi_ollama_bridge"]

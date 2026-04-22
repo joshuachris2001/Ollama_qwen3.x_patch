@@ -1,0 +1,32 @@
+"""
+ModelCores/glm4.py
+====================
+expermental route for handleing GLM4 v models
+"""
+
+from __future__ import annotations
+
+from gguf import GGUFWriter
+
+from .base import _read_array, _read_scalar
+from .qwen_base import QwenBaseModelCore  # pyright: ignore[reportMissingImports]
+from .qwen35 import Qwen35ModeCore
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.5-VL Dense
+# ---------------------------------------------------------------------------
+
+class Glm4ModelCore(Qwen35ModelCore):
+
+    MODEL_TYPE = "glm4"
+    STATUS     = "experimental"
+
+    @classmethod
+    def get_help_info(cls) -> dict:  # pyright: ignore[reportMissingTypeArgument]
+        return {
+            "description":   "glm4",
+            "requires_blob": False,
+            "status":        "experimental",
+            "extra_options": [],
+        }

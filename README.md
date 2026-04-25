@@ -105,7 +105,6 @@ tsuangi-ollama \
 ```bash
 tsuangi-ollama \
     --model-type qwen35 \
-    --blob   /var/lib/ollama/blobs/sha256-81fb60... \
     --llm    my-finetune.Q6_K.gguf \
     --mmproj mmproj.gguf \
     --output merged_qwen35.gguf
@@ -113,5 +112,15 @@ tsuangi-ollama \
 
 If `--output` is omitted, the merged model will be saved as `merged.gguf` in the current working directory.
 
-# AI Receipt
-I used Claude Sonnet 4.6 (via Perplexity) to assist with the program structure.
+## AI Disclosure
+
+Claude Sonnet (via Perplexity) assisted with refactoring program structure
+from a monolithic script into the current modular architecture, inline
+documentation, and the HuggingFace Space interface.
+
+All model-specific tensor mappings and architecture logic were derived
+through original reverse engineering — comparing tensor/KV conflicts
+against known-working Ollama models to empirically determine correct
+format requirements. Initial work was brute-forced without documentation;
+later models (Qwen3.5, Gemma4) additionally referenced Ollama's source
+to inform the mapping approach.

@@ -381,6 +381,8 @@ def main() -> None:
     print("Releasing sources...")
     if ref is not None:
         del ref
+
+    written_llm = len(llm.tensors) - len(dropped_tensors)
     del mmproj, llm
 
     
@@ -393,17 +395,17 @@ def main() -> None:
     #print("Syncing to disk...")
     #writer.flush()
     print("Syncing to disk...") # unlikely be helpful, but future potential. 
-    for fout in tqdm(writer.fout, desc="Syncing shards", unit="shard", disable=len(writer.fout) == 1):
+    for fout in tqdm(writer.fout, desc="Syncing shards", unit="shard", disable=len(writer.fout) == 1):  # pyright: ignore[reportArgumentType]
         fout.flush()
         os.fsync(fout.fileno())
     writer.close()
 
-    written_llm = len(llm.tensors) - len(dropped_tensors)
-    print(f"\nOutput         : {args.output}")
+    # written_llm = len(llm.tensors) - len(dropped_tensors)
+    print(f"\nOutput         : {args.output}")  # pyright: ignore[reportAny]
     print(f"  LLM tensors  : {written_llm}"
           + (f" ({len(dropped_tensors)} dropped)" if dropped_tensors else ""))
-    print(f"  Enc tensors  : {len(encoder_tensors)}")
-    print(f"  Total        : {written_llm + len(encoder_tensors)}")
+    print(f"  Enc tensors  : {len(encoder_tensors)}")  # pyright: ignore[reportUnknownArgumentType]
+    print(f"  Total        : {written_llm + len(encoder_tensors)}")  # pyright: ignore[reportUnknownArgumentType]
     print("Done.")
 
 

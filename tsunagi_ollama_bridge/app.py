@@ -31,28 +31,23 @@ from tsunagi_ollama_bridge.ModelCores.base import (  # pyright: ignore[reportMis
 LLM_CAP_BYTES    = 23 * 1024 ** 3   # 23 GB
 MMPROJ_CAP_BYTES =  1 * 1024 ** 3   #  1 GB
 
+MAX_OPTS = 8
 
 # ---------------------------------------------------------------------------
-# Clean up Helpers
+# Cleanup helpers
 # ---------------------------------------------------------------------------
 
 _TMPDIR = tempfile.gettempdir()
 
 def _user_job_dir(session_hash: str) -> str:
-    """Deterministic per-session temp dir — not yet created."""
     h = hashlib.sha256(session_hash.encode()).hexdigest()[:16]
     return os.path.join(_TMPDIR, f"tsunagi_{h}")
 
 def _cleanup_user_previous(job_dir: str):
-    """Wipe this user's last run dir before starting a new one."""
     if os.path.isdir(job_dir):
         shutil.rmtree(job_dir, ignore_errors=True)
 
 def _start_age_cleanup_worker():
-    """
-    Background daemon: every hour, scan the first 500 tsunagi_* dirs
-    and delete any whose merged.gguf is older than 24 h.
-    """
     def _worker():
         while True:
             time.sleep(3600)
@@ -61,20 +56,18 @@ def _start_age_cleanup_worker():
             for d in dirs:
                 try:
                     marker = os.path.join(d, "merged.gguf")
-                    # Use mtime of the finished file — written last, most accurate
                     if os.path.isfile(marker) and os.path.getmtime(marker) < cutoff:
                         shutil.rmtree(d, ignore_errors=True)
                     elif os.path.isdir(d) and os.path.getmtime(d) < cutoff:
-                        # Catch dirs where merge never finished
                         shutil.rmtree(d, ignore_errors=True)
                 except Exception:
                     pass
     threading.Thread(target=_worker, daemon=True).start()
 
-_start_age_cleanup_worker()   # fires once at module load
+_start_age_cleanup_worker()
 
 # ---------------------------------------------------------------------------
-# Model registry — blob-required models are filtered out for the Space
+# Model registry — one pass at startup
 # ---------------------------------------------------------------------------
 def get_supported_models() -> dict:
     registry = discover_models()
@@ -83,8 +76,14 @@ def get_supported_models() -> dict:
 SUPPORTED_MODELS = get_supported_models()
 MODEL_CHOICES    = sorted(SUPPORTED_MODELS.keys())
 
+# Pre-scan extra_options for every model once — used by UI and on_submit
+MODEL_OPTIONS: dict[str, list[tuple[str, str]]] = {
+    k: v.get_help_info().get("extra_options", [])
+    for k, v in SUPPORTED_MODELS.items()
+}
+
 # ---------------------------------------------------------------------------
-# Architecture detection from GGUF general.architecture
+# Architecture detection
 # ---------------------------------------------------------------------------
 def detect_architecture(gguf_path: str) -> str | None:
     try:
@@ -99,7 +98,7 @@ def detect_architecture(gguf_path: str) -> str | None:
     return None
 
 # ---------------------------------------------------------------------------
-# HF Hub size validation (checks metadata before downloading)
+# HF Hub size validation
 # ---------------------------------------------------------------------------
 def validate_hub_size(repo_id: str, filename: str, cap: int) -> tuple[bool, int]:
     url  = hf_hub_url(repo_id, filename)
@@ -108,7 +107,7 @@ def validate_hub_size(repo_id: str, filename: str, cap: int) -> tuple[bool, int]
     return size <= cap, size
 
 # ---------------------------------------------------------------------------
-# Input resolution — returns (local_path, status_message)
+# Input resolution
 # ---------------------------------------------------------------------------
 def resolve_input(upload, repo_id: str, filename: str, cap: int, label: str) -> tuple[str | None, str]:
     cap_gb = cap // 1024 ** 3
@@ -137,42 +136,20 @@ def resolve_input(upload, repo_id: str, filename: str, cap: int, label: str) -> 
     return None, f"⚠ No {label} provided — upload a file or enter a HF repo + filename."
 
 # ---------------------------------------------------------------------------
-# Architecture detection UI helper
-# ---------------------------------------------------------------------------
-def check_architecture(llm_upload, llm_repo, llm_file) -> tuple[str, str]:
-    path, msg = resolve_input(llm_upload, llm_repo, llm_file, LLM_CAP_BYTES, "LLM")
-    if path is None:
-        return msg, ""
-
-    arch = detect_architecture(path)
-    if arch is None:
-        return f"{msg} ⚠ Could not read general.architecture from GGUF.", ""
-
-    if arch in MODEL_CHOICES:
-        return (
-            f"{msg} ✓ Architecture detected: **{arch}** — supported.",
-            arch,
-        )
-    else:
-        return (
-            f"{msg} ❌ Architecture **{arch}** is not supported in this Space. "
-            f"Supported: {', '.join(MODEL_CHOICES)}",
-            "",
-        )
-
-# ---------------------------------------------------------------------------
-# Args namespace — replaces argparse for the pipeline
+# Args namespace
 # ---------------------------------------------------------------------------
 class _Args:
-    def __init__(self, model_type, llm, mmproj, output):
+    def __init__(self, model_type, llm, mmproj, output, extra_flags: dict | None = None):
         self.model_type = model_type
         self.llm        = llm
         self.mmproj     = mmproj
         self.blob       = None
         self.output     = output
+        for attr, val in (extra_flags or {}).items():
+            setattr(self, attr, val)
 
 # ---------------------------------------------------------------------------
-# Progress bar HTML helper
+# Progress bar / elapsed helpers
 # ---------------------------------------------------------------------------
 def _progress_bar_html(done: int, total: int, label: str = "") -> str:
     pct = int((done / total) * 100) if total > 0 else 0
@@ -185,9 +162,6 @@ def _progress_bar_html(done: int, total: int, label: str = "") -> str:
   </div>
 </div>"""
 
-# ---------------------------------------------------------------------------
-# Elapsed time formatter  [NEW]
-# ---------------------------------------------------------------------------
 def _fmt_elapsed(start: float) -> str:
     elapsed = int(time.time() - start)
     h, rem  = divmod(elapsed, 3600)
@@ -195,30 +169,22 @@ def _fmt_elapsed(start: float) -> str:
     return f"{h:02d}h {m:02d}m {s:02d}s"
 
 # ---------------------------------------------------------------------------
-# Core merge pipeline — generator version for Gradio streaming
+# Core merge pipeline
 # ---------------------------------------------------------------------------
 def run_merge_streamed(
-    llm_path: str,
-    mmproj_path: str,
-    model_type: str,
-    output_path: str,
-    initial_logs: list[str] | None = None,
+    llm_path: str, mmproj_path: str, model_type: str, output_path: str,
+    initial_logs: list[str] | None = None, extra_flags: dict | None = None,
 ):
-    """
-    Generator that yields (progress_html, log_text, file_path | None).
-    file_path is None until the very last yield where it contains the GGUF path.
-    """
     logs       = list(initial_logs) if initial_logs else []
     start_time = time.time()
 
     def log(msg: str):
-        # [FIX A] "\n" is a real newline; timestamps prepended to every entry
         logs.append(f"[{_fmt_elapsed(start_time)}] {msg}")
 
     yield _progress_bar_html(0, 0, "Waiting…"), "\n".join(logs), None
 
     core = load_model_core(SUPPORTED_MODELS, model_type)
-    args = _Args(model_type, llm_path, mmproj_path, output_path)
+    args = _Args(model_type, llm_path, mmproj_path, output_path, extra_flags)
     core.validate_args(args)
 
     log("Loading mmproj...")
@@ -268,8 +234,7 @@ def run_merge_streamed(
 
     log("Injecting controlled KV fields...")
     core.inject_kv(writer, None, mmproj.fields, llm.fields, args=args)
-
-    del mmproj # mmproj clean up
+    del mmproj
 
     writer.add_string("tokenizer.chat_template", chat_template)
     writer.add_uint32("general.quantization_version", llm_quant_version)
@@ -278,7 +243,6 @@ def run_merge_streamed(
     llm_renames = core.get_llm_renames(ref_fields=None, llm_fields=llm.fields)
     dropped: list[str] = []
 
-    # ── LLM tensors ──────────────────────────────────────────────
     log(f"Writing {len(llm.tensors)} LLM tensors...")
     total   = len(llm.tensors) + len(encoder_tensors)
     written = 0
@@ -296,11 +260,9 @@ def run_merge_streamed(
         if written % 25 == 0:
             yield (
                 _progress_bar_html(written, total, f"Writing tensors… {_fmt_elapsed(start_time)}"),
-                "\n".join(logs),
-                None,
+                "\n".join(logs), None,
             )
 
-    # ── Encoder tensors ──────────────────────────────────────────
     log(f"Writing {len(encoder_tensors)} encoder tensors...")
     for final_name, t_or_tuple in encoder_tensors.items():
         if hasattr(t_or_tuple, "tensor_type"):
@@ -317,22 +279,16 @@ def run_merge_streamed(
         if written % 25 == 0:
             yield (
                 _progress_bar_html(written, total, f"Writing tensors… {_fmt_elapsed(start_time)}"),
-                "\n".join(logs),
-                None,
+                "\n".join(logs), None,
             )
 
     written_llm = len(llm.tensors) - len(dropped)
-    del llm # clean up llm read.
+    del llm
 
-    # ── Finalize ─────────────────────────────────────────────────
     core.post_write_tensors(writer, None, args)
 
     log("Finalizing output GGUF...")
-    yield (
-        _progress_bar_html(total, total, f"Finalizing… {_fmt_elapsed(start_time)}"),
-        "\n".join(logs),
-        None,
-    )
+    yield _progress_bar_html(total, total, f"Finalizing… {_fmt_elapsed(start_time)}"), "\n".join(logs), None
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
@@ -340,7 +296,7 @@ def run_merge_streamed(
 
     tensor_count = sum(len(t) for t in writer.tensors)
     log(f"Writing {tensor_count} tensors to file...")
-    yielded = total  # [FIX — continuous counter, no bar regression]
+    yielded = total
     for tensors in writer.tensors:
         for name, ti in list(tensors.items()):
             writer.write_tensor_data(ti.tensor)  # pyright: ignore[reportArgumentType]
@@ -348,15 +304,10 @@ def run_merge_streamed(
             if yielded % 50 == 0:
                 yield (
                     _progress_bar_html(yielded, total + tensor_count, f"Writing tensor data… {_fmt_elapsed(start_time)}"),
-                    "\n".join(logs),
-                    None,
+                    "\n".join(logs), None,
                 )
 
-    # [FIX B] writer.close() BEFORE yielding the output path
-    _progress_bar_html(1,1,"Fininshing up...")  # pyright: ignore[reportUnusedCallResult]
     writer.close()
-
-    #written_llm = len(llm.tensors) - len(dropped)
     log(
         f"\n✓ Done in {_fmt_elapsed(start_time)}\n"
         f"  LLM tensors   : {written_llm}"
@@ -364,48 +315,115 @@ def run_merge_streamed(
         f"  Enc tensors   : {len(encoder_tensors)}\n"
         f"  Total         : {written_llm + len(encoder_tensors)}"
     )
-
-    # [FIX C] Single final yield after close()
     yield (
         _progress_bar_html(
-            total + tensor_count,
-            total + tensor_count,
+            total + tensor_count, total + tensor_count,
             f"Complete — {_fmt_elapsed(start_time)} - Syncing model to disk... [Should take a bit]",
         ),
-        "\n".join(logs),
-        args.output,
+        "\n".join(logs), args.output,
     )
 
 # ---------------------------------------------------------------------------
-# Gradio submit handler — streams via generator, yields 3-tuple
+# Options UI helpers
+# ---------------------------------------------------------------------------
+
+_MSG_NO_MODEL   = "*⚠ A model must be selected or detected before options can be shown.*"
+_MSG_NO_OPTIONS = "*No model-specific options available for this architecture.*"
+
+def _flag_to_attr(flag: str) -> str:
+    return flag.lstrip("-").replace("-", "_")
+
+def _options_ui_updates(model_type: str) -> list:
+    """
+    Returns MAX_OPTS checkbox gr.update()s + 1 notice gr.update().
+    Total length always == MAX_OPTS + 1.
+    """
+    is_real = model_type != "AUTO DETECT" and model_type in SUPPORTED_MODELS
+    options = MODEL_OPTIONS.get(model_type, []) if is_real else []
+
+    cb_updates = []
+    for i in range(MAX_OPTS):
+        if i < len(options):
+            flag, desc = options[i]
+            cb_updates.append(gr.update(
+                label=f"{flag}   —   {desc}",
+                visible=True,
+                value=flag in ("--vision",),
+                interactive=True,
+            ))
+        else:
+            cb_updates.append(gr.update(visible=False, value=False))
+
+    if not is_real:
+        notice = gr.update(visible=True, value=_MSG_NO_MODEL)
+    elif not options:
+        notice = gr.update(visible=True, value=_MSG_NO_OPTIONS)
+    else:
+        notice = gr.update(visible=False)
+
+    return cb_updates + [notice]
+
+# ---------------------------------------------------------------------------
+# detect_btn handler
+# Returns ALL outputs in one atomic response — no chaining, no race.
+# outputs: [arch_status, model_type_dd, run_btn, cb0…cb7, opts_notice]
+# ---------------------------------------------------------------------------
+def on_detect(llm_upload, llm_repo, llm_file) -> list:
+    path, msg = resolve_input(llm_upload, llm_repo, llm_file, LLM_CAP_BYTES, "LLM")
+
+    if path is None:
+        return [msg, "AUTO DETECT", gr.update(interactive=False)] + _options_ui_updates("AUTO DETECT")
+
+    arch = detect_architecture(path)
+
+    if arch is None:
+        status = f"{msg} ⚠ Could not read general.architecture from GGUF."
+        return [status, "AUTO DETECT", gr.update(interactive=False)] + _options_ui_updates("AUTO DETECT")
+
+    if arch not in MODEL_CHOICES:
+        status = f"{msg} ❌ Architecture **{arch}** is not supported."
+        return [status, "AUTO DETECT", gr.update(interactive=False)] + _options_ui_updates("AUTO DETECT")
+
+    status = f"{msg} ✓ Architecture detected: **{arch}** — supported."
+    return [status, arch, gr.update(interactive=True)] + _options_ui_updates(arch)
+
+# ---------------------------------------------------------------------------
+# model_type_dd.change handler
+# Returns ALL outputs in one atomic response — same shape as on_detect minus
+# the first two (arch_status, model_type_dd are not outputs of this handler).
+# outputs: [run_btn, cb0…cb7, opts_notice]
+# ---------------------------------------------------------------------------
+def on_model_change(model_type: str) -> list:
+    is_real = model_type != "AUTO DETECT" and model_type in SUPPORTED_MODELS
+    return [gr.update(interactive=is_real)] + _options_ui_updates(model_type)
+
+# ---------------------------------------------------------------------------
+# Submit handler
 # ---------------------------------------------------------------------------
 def on_submit(
     llm_upload, llm_repo, llm_file,
     mmproj_upload, mmproj_repo, mmproj_file,
     model_type,
-    hf_push, hf_repo, hf_token, request: gr.Request  # pyright: ignore[reportUnknownMemberType]
+    hf_push, hf_repo, hf_token,
+    *opt_values,
+    request: gr.Request
 ):
-    # ── Per-user job directory ──────────────────────────────────────
     session_hash = getattr(request, "session_hash", None) or "anonymous"
     job_dir      = _user_job_dir(session_hash)
-    _cleanup_user_previous(job_dir)            # wipe their last run
+    _cleanup_user_previous(job_dir)
     os.makedirs(job_dir, exist_ok=True)
 
     logs = []
-    def log(msg: str):
-        logs.append(msg)
+    def log(msg: str): logs.append(msg)
 
-    yield _progress_bar_html(0, 0, "Starting…"), "", gr.update(interactive=False, value=None)
+    yield _progress_bar_html(0, 0, "Starting…"), "", gr.update(interactive=False)
 
-
-    # ── Resolve inputs ──────────────────────────────────────────────
     llm_path, llm_msg = resolve_input(llm_upload, llm_repo, llm_file, LLM_CAP_BYTES, "LLM")
     log(llm_msg)
     if llm_path is None:
         yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
         return
 
-    # ── Auto-detect architecture if not manually selected ───────────
     if model_type == "AUTO DETECT":
         log("Auto-detecting architecture from LLM GGUF...")
         yield _progress_bar_html(0, 0, "Detecting architecture…"), "\n".join(logs), gr.update()
@@ -419,7 +437,7 @@ def on_submit(
             yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
             return
         log(f"✓ Auto-detected architecture: {arch}")
-        model_type = arch  # ← seamlessly replaces the sentinel value
+        model_type = arch
 
     mmproj_path, mm_msg = resolve_input(mmproj_upload, mmproj_repo, mmproj_file, MMPROJ_CAP_BYTES, "mmproj")
     log(mm_msg)
@@ -428,63 +446,57 @@ def on_submit(
         return
 
     if not model_type:
-        log("❌ No model type selected. Use auto-detect or select manually.")
+        log("❌ No model type selected.")
         yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
         return
 
-    # ── Run merge stream ────────────────────────────────────────────
+    options     = MODEL_OPTIONS.get(model_type, [])
+    extra_flags = {
+        _flag_to_attr(flag): bool(opt_values[i])
+        for i, (flag, _) in enumerate(options)
+    }
+
     last_log_text = "\n".join(logs)
-    raw_output = os.path.join(job_dir, "building.gguf")
+    raw_output    = os.path.join(job_dir, "building.gguf")
     try:
-        for bar_html, log_text, file_path in run_merge_streamed(llm_path, mmproj_path, model_type, raw_output, logs):
+        for bar_html, log_text, file_path in run_merge_streamed(
+            llm_path, mmproj_path, model_type, raw_output, logs, extra_flags=extra_flags,
+        ):
             last_log_text = log_text
             if file_path is not None:
                 raw_output = file_path
-            # Keep button grayed out during processing [NEW]
             yield bar_html, log_text, gr.update()
     except Exception:
-        full_log = f"{last_log_text}\n❌ Merge failed:\n{traceback.format_exc()}"
-        yield _progress_bar_html(0, 0, "Failed"), full_log, gr.update()
+        yield _progress_bar_html(0, 0, "Failed"), f"{last_log_text}\n❌ Merge failed:\n{traceback.format_exc()}", gr.update()
         return
 
     if raw_output is None:
         yield _progress_bar_html(0, 0, "Failed"), last_log_text, gr.update()
         return
 
-    # ── Rename temp file to merged.gguf [NEW] ──────────────────────
     merged_path = os.path.join(job_dir, "merged.gguf")
     os.rename(raw_output, merged_path)
     output_path = merged_path
 
-    # ── Output delivery ─────────────────────────────────────────────
     if hf_push and hf_repo and hf_token:
         try:
             upload_file(
-                path_or_fileobj=output_path,
-                path_in_repo="merged.gguf",
-                repo_id=hf_repo.strip(),
-                token=hf_token.strip(),
-                repo_type="model",
+                path_or_fileobj=output_path, path_in_repo="merged.gguf",
+                repo_id=hf_repo.strip(), token=hf_token.strip(), repo_type="model",
             )
-            full_log = f"{last_log_text}\n✓ Uploaded to HF Hub: {hf_repo}/merged.gguf"
             yield (
                 _progress_bar_html(1, 1, "Hub upload complete"),
-                full_log,
-                gr.update(value=output_path, interactive=True),  # [NEW] unlock button
+                f"{last_log_text}\n✓ Uploaded to HF Hub: {hf_repo}/merged.gguf",
+                gr.update(value=output_path, interactive=True),
             )
         except Exception as e:
-            full_log = f"{last_log_text}\n⚠ Hub upload failed: {e}\nFalling back to direct download."
             yield (
                 _progress_bar_html(1, 1, "Hub upload failed"),
-                full_log,
+                f"{last_log_text}\n⚠ Hub upload failed: {e}\nFalling back to direct download.",
                 gr.update(value=output_path, interactive=True),
             )
     else:
-        yield (
-            _progress_bar_html(1, 1, "Ready for download"),
-            last_log_text,
-            gr.update(value=output_path, interactive=True),  # [NEW] unlock button
-        )
+        yield _progress_bar_html(1, 1, "Ready for download"), last_log_text, gr.update(value=output_path, interactive=True)
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +521,6 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
     )
 
     with gr.Row():
-        # ── LLM input ──────────────────────────────────────────────
         with gr.Column():
             gr.Markdown("### LLM (text model) — max 23 GB")
             llm_upload = gr.File(label="Upload GGUF", file_types=[".gguf"])
@@ -517,7 +528,6 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
             llm_repo   = gr.Textbox(label="Repo ID", placeholder="org/model-name")
             llm_file   = gr.Textbox(label="Filename", placeholder="model.gguf")
 
-        # ── mmproj input ────────────────────────────────────────────
         with gr.Column():
             gr.Markdown("### mmproj (vision encoder) — max 1 GB")
             mmproj_upload = gr.File(label="Upload GGUF", file_types=[".gguf"])
@@ -530,24 +540,66 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
         with gr.Column(scale=2):
             arch_status = gr.Markdown("*Architecture will be detected from the LLM GGUF.*")
         with gr.Column(scale=1):
-            detect_btn  = gr.Button("🔍 Detect Architecture", variant="secondary")
+            detect_btn = gr.Button("🔍 Detect Architecture", variant="secondary")
 
     # ── Model type ──────────────────────────────────────────────────
     with gr.Row():
         model_type_dd = gr.Dropdown(
-            choices=["AUTO DETECT"]+MODEL_CHOICES,
+            choices=["AUTO DETECT"] + MODEL_CHOICES,
             value="AUTO DETECT",
             label="Model Type",
             info="Auto-filled on detection, or select manually.",
             interactive=True,
         )
 
-    # Architecture support table  [FIX A — "\n" not "\\n"]
-    arch_table_md = "| Model | Status |\n|---|---|\n" + "\n".join(
-        f"| `{k}` | ✓ supported |" for k in MODEL_CHOICES
-    )
+    # Supported architectures table — includes Options column from pre-scan
+    def _arch_row(k: str) -> str:
+        opts     = MODEL_OPTIONS.get(k, [])
+        opts_str = ", ".join(f"`{flag}`" for flag, _ in opts) if opts else "—"
+        return f"| `{k}` | ✓ | {opts_str} |"
+
     with gr.Accordion("Supported architectures", open=False):
-        gr.Markdown(arch_table_md)
+        gr.Markdown(
+            "| Model | Status | Options |\n|---|---|---|\n"
+            + "\n".join(_arch_row(k) for k in MODEL_CHOICES)
+        )
+
+    # run_btn — starts non-interactive (AUTO DETECT selected)
+    run_btn = gr.Button("⚙ Build Monolith", variant="primary", interactive=False)
+
+    # ── Model-specific options ──────────────────────────────────────
+    with gr.Row():
+        gr.Markdown("**Model-specific options:**")
+    with gr.Row():
+        opt_checkboxes: list[gr.Checkbox] = []
+        for _ in range(MAX_OPTS):
+            cb = gr.Checkbox(label="", value=False, visible=False, interactive=True)
+            opt_checkboxes.append(cb)
+
+    # Starts visible — correct for AUTO DETECT initial state
+    opts_notice = gr.Markdown(value=_MSG_NO_MODEL, visible=True)
+
+    # ── Shared output list used by BOTH handlers ────────────────────
+    # [run_btn, cb0…cb7, opts_notice]  — MAX_OPTS + 2 items
+    _opts_outputs = [run_btn] + opt_checkboxes + [opts_notice]
+
+    # detect_btn: single atomic response covering every output it touches.
+    # Does NOT write model_type_dd from a second step — all outputs resolved
+    # in one fn call, returned together, applied by Gradio in one update.
+    detect_btn.click(
+        fn=on_detect,
+        inputs=[llm_upload, llm_repo, llm_file],
+        outputs=[arch_status, model_type_dd] + _opts_outputs,
+    )
+
+    # model_type_dd.change: handles manual selection.
+    # Separate handler, separate outputs — no overlap with detect_btn outputs
+    # so there is no possibility of a concurrent write to the same component.
+    model_type_dd.input(
+        fn=on_model_change,
+        inputs=[model_type_dd],
+        outputs=_opts_outputs,
+    )
 
     # ── Output options ──────────────────────────────────────────────
     gr.Markdown("### Output")
@@ -562,45 +614,26 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
                 outputs=[hf_repo, hf_token],
             )
 
-    # ── Run ─────────────────────────────────────────────────────────
-    run_btn = gr.Button("⚙ Build Monolith", variant="primary")
-
-    # ── Progress + Log ───────────────────────────────────────────────
     progress_html = gr.HTML(value="", visible=True)
     log_box       = gr.Textbox(label="Log", lines=18, interactive=False)
 
-    # ── Large download button — grayed out until merge completes [NEW]
     download_btn = gr.DownloadButton(
         label="⬇️ Download merged.gguf",
-        value=None,
-        interactive=False,
-        variant="primary",
-        size="lg",
+        value=None, interactive=False,
+        variant="primary", size="lg",
         elem_id="tsunagi-download-btn",
     )
 
-    # Extra CSS to make the button visually large and full-width
     gr.HTML("""
     <style>
       #tsunagi-download-btn { margin-top: 8px; }
       #tsunagi-download-btn button {
-        width: 100%;
-        min-height: 56px;
-        font-size: 1.15rem;
-        font-weight: 600;
-        letter-spacing: 0.02em;
+        width: 100%; min-height: 56px;
+        font-size: 1.15rem; font-weight: 600; letter-spacing: 0.02em;
       }
     </style>
     """)
 
-    # ── Wire detect button ──────────────────────────────────────────
-    detect_btn.click(
-        fn=check_architecture,
-        inputs=[llm_upload, llm_repo, llm_file],
-        outputs=[arch_status, model_type_dd],
-    )
-
-    # ── Wire run button — GENERATOR ─────────────────────────────────
     run_btn.click(
         fn=on_submit,
         inputs=[
@@ -608,6 +641,7 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
             mmproj_upload, mmproj_repo, mmproj_file,
             model_type_dd,
             hf_push, hf_repo, hf_token,
+            *opt_checkboxes,
         ],
         outputs=[progress_html, log_box, download_btn],
     )

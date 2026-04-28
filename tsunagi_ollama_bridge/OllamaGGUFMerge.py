@@ -15,6 +15,7 @@ Pass -h or --help to see discovered models and all options.
 import argparse
 import os
 import sys
+import gc # experimental attempt at a cleaner closing
 
 import numpy as np
 from tqdm import tqdm
@@ -375,11 +376,26 @@ def main() -> None:
     # ── 14. Post-write hook ──────────────────────────────────────────
     core.post_write_tensors(writer, ref, args)
 
+    # ── 14.5 Pre-sync cleanup ─────────────────────────────────────────
+
+    print("Releasing sources...")
+    if ref is not None:
+        del ref
+    del mmproj, llm
+
+    
     # ── 15. Finalize ─────────────────────────────────────────────────
     print("\nFinalizing output file...")
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file(progress=True)
+
+    #print("Syncing to disk...")
+    #writer.flush()
+    print("Syncing to disk...") # unlikely be helpful, but future potential. 
+    for fout in tqdm(writer.fout, desc="Syncing shards", unit="shard", disable=len(writer.fout) == 1):
+        fout.flush()
+        os.fsync(fout.fileno())
     writer.close()
 
     written_llm = len(llm.tensors) - len(dropped_tensors)

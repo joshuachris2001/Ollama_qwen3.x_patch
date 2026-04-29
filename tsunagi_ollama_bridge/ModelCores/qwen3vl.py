@@ -34,11 +34,16 @@ GGUF when present so finetuned MoE models carry the correct value.
 """
 
 from __future__ import annotations
+from ctypes import Array
+from typing import override
 
 from gguf import GGUFWriter
 
 from .base import _read_scalar
 from .qwen_base import QwenBaseModelCore
+
+def get_deepstack_array(mmproj) -> list[int]:
+    return sorted({ int(t.split(".")[2]) for t in mmproj if t.startswith("v.deepstack.") and t.split(".")[2].isdigit() } )
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +126,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
         writer.add_array(f"{a}.mrope_sections", [24, 20, 20])
 
         # Deepstack
-        writer.add_array(f"{a}.vision.deepstack_visual_indexes", [8, 16, 24])
+        writer.add_array(f"{a}.vision.deepstack_visual_indexes", get_deepstack_array(mmproj_fields))#[8, 16, 24])
 
         # Tokenizer
         writer.add_bool( "tokenizer.ggml.add_eos_token",     False)

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
+from typing import OrderedDict
 
+from gguf.gguf_reader import ReaderField
 import numpy as np
 from gguf import GGUFWriter, GGUFValueType, GGMLQuantizationType
 
@@ -67,19 +69,19 @@ STATUS_EXPERIMENTAL = "experimental"
 # Module-level GGUF helpers (importable by plugin modules)
 # ---------------------------------------------------------------------------
 
-def _read_array(fields: dict, key: str) -> list:
+def _read_array(fields: dict, key: str) -> list:  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType, reportUnusedFunction]
     """Return a Python list from a GGUF array field."""
     f = fields[key]
-    return np.concatenate([f.parts[idx] for idx in f.data]).tolist()
+    return np.concatenate([f.parts[idx] for idx in f.data]).tolist()  # pyright: ignore[reportAny, reportUnknownArgumentType, reportUnknownMemberType, reportUnknownVariableType]
 
 
-def _read_scalar(fields: dict, key: str):
+def _read_scalar(fields: OrderedDict[str, ReaderField], key: str):
     """Return a single scalar value from a GGUF scalar field."""
     f = fields[key]
-    return f.parts[f.data[0]][0]
+    return f.parts[f.data[0]][0]  # pyright: ignore[reportAny]
 
 
-def copy_field(writer: GGUFWriter, field, name: str | None = None) -> None:
+def copy_field(writer: GGUFWriter, field: dict, name: str | None = None) -> None:  # pyright: ignore[reportMissingTypeArgument]
     """
     Copy one KV metadata field from a GGUFReader field object into writer.
     Pass name= to write under a different key (used for clip.* → .* renames).
@@ -184,7 +186,7 @@ class BaseModelCore(ABC):
     # ------------------------------------------------------------------
 
     @classmethod
-    def get_help_info(cls) -> dict:
+    def get_help_info(cls) -> dict[str, str | bool | list[tuple[str, str]]]:
         """
         Return a dict describing this plugin for the custom --help display.
 

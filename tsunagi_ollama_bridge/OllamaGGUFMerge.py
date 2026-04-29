@@ -23,7 +23,7 @@ from gguf import GGUFReader, GGUFWriter, GGMLQuantizationType
 
 from .ModelCores import discover_models, load_model_core
 from .ModelCores.base import (
-    FLOAT_TYPES, SKIP_META, copy_field, write_tensor, _read_scalar,
+    FLOAT_TYPES, SKIP_META, BaseModelCore, copy_field, write_tensor, _read_scalar,
     STATUS_STABLE, STATUS_STUB, STATUS_EXPERIMENTAL,
 )
 
@@ -44,21 +44,21 @@ _BLOB_BADGE = {
     False: "blob not required",
 }
 
-def print_models(model_registry: dict) -> None:  # pyright: ignore[reportMissingTypeArgument]
+def print_models(model_registry: dict[str, type[BaseModelCore]]) -> None:
     """Print a formatted table of all discovered model plugins and exit."""
     print(f"\n{'MODEL TYPE':<16} {'STATUS':<14} {'BLOB':<10} DESCRIPTION")
     print("─" * 72)
     for mtype in sorted(model_registry):
         cls  = model_registry[mtype]
         info = cls.get_help_info()
-        status   = _STATUS_BADGE.get(info["status"], info["status"])
+        status   = _STATUS_BADGE.get(info["status"], info["status"])  # pyright: ignore[reportCallIssue, reportArgumentType]
         blob_tag = "required" if info["requires_blob"] else "internalized"
         desc     = info["description"] or ""
         print(f"{mtype:<12} {status:<8} {blob_tag:<10} {desc}")
     print()
     sys.exit(0)
 
-def _print_custom_help(model_registry: dict, model_type: str | None = None) -> None:  # pyright: ignore[reportMissingTypeArgument]
+def _print_custom_help(model_registry: dict[str, type[BaseModelCore]], model_type: str | None = None) -> None:
     """
     Print the custom help screen and exit.
 
@@ -292,13 +292,10 @@ def main() -> None:
         chat_template = official_chat_template
         print("  WARNING: LLM has no chat template — falling back to blob template")
     else:
-        sys.exit(
-            "ERROR: No chat template found. The LLM GGUF does not carry one and "
-            "no --blob was provided to fall back to."
-        )
+        sys.exit("ERROR: No chat template found. The LLM GGUF does not carry one and \nno --blob was provided to fall back to.")
 
     llm_quant_version = (
-        int(_read_scalar(llm.fields, "general.quantization_version"))
+        int(_read_scalar(llm.fields, "general.quantization_version"))  # pyright: ignore[reportArgumentType]
         if "general.quantization_version" in llm.fields
         else 2
     )

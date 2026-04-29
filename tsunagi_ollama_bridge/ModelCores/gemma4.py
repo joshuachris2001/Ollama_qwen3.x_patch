@@ -104,12 +104,13 @@ _AUDIO_CLAMP_LINEARS: tuple[str, ...] = tuple(_AUDIO_CLAMP_BLK0.keys())
 class Gemma4ModelCore(BaseModelCore):
     """Full merge plugin for Gemma 4 multimodal models."""
 
-    MODEL_TYPE    = "gemma4"
-    REQUIRES_BLOB = False
-    STATUS        = "stable"
+    MODEL_TYPE: str    = "gemma4"
+    REQUIRES_BLOB: bool = False
+    STATUS: str        = "stable"
 
     @classmethod
-    def get_help_info(cls) -> dict:
+    @override
+    def get_help_info(cls):
         return {
             "description":   "Gemma 4 — all sizes (E2B, E4B, 26B MoE, 31B dense)",
             "requires_blob": False,

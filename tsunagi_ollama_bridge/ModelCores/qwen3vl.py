@@ -95,6 +95,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
     # KV Injection — All values hardcoded (verified against official blob)
     # ------------------------------------------------------------------
 
+    @override
     def inject_kv(
         self,
         writer: GGUFWriter,
@@ -136,7 +137,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
         # Parameter count — prefer LLM's own value so finetuned variants
         # carry the correct count; fall back to the known 7B dense value.
         param_count = (
-            int(_read_scalar(llm_fields, "general.parameter_count"))
+            int(_read_scalar(llm_fields, "general.parameter_count"))  # pyright: ignore[reportArgumentType]
             if "general.parameter_count" in llm_fields
             else 8_767_123_696
         )
@@ -144,7 +145,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
 
         # File type — must reflect the actual LLM tensor format
         _ft = (
-            int(_read_scalar(llm_fields, "general.file_type"))
+            int(_read_scalar(llm_fields, "general.file_type"))  # pyright: ignore[reportArgumentType]
             if "general.file_type" in llm_fields
             else 32
         )

@@ -155,9 +155,9 @@ def _build_kv_head_array(llm_fields, arch: str) -> list[int]:
 class Qwen35ModelCore(QwenBaseModelCore):
 	"""Merge plugin for Qwen3.5 dense models (e.g. 4B, 9B, 27B)."""
 
-	MODEL_TYPE    = "qwen35"
-	REQUIRES_BLOB = False
-	STATUS        = "stable"
+	MODEL_TYPE: str    = "qwen35"
+	REQUIRES_BLOB: bool = False
+	STATUS: str        = "stable"
 
 	@classmethod
 	def get_help_info(cls) -> dict:  # pyright: ignore[reportMissingTypeArgument]

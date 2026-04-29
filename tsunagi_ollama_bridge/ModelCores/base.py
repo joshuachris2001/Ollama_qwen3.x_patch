@@ -240,6 +240,7 @@ class BaseModelCore(ABC):
         Override to validate model-specific arguments.
         Call sys.exit() with a descriptive message on failure.
         """
+        pass
 
     # ------------------------------------------------------------------
     # KV metadata filtering
@@ -279,7 +280,7 @@ class BaseModelCore(ABC):
     # ------------------------------------------------------------------
 
     def should_skip_mmproj_kv(
-        self, field_name: str, renamed_key: str, args
+        self, field_name: str, renamed_key: str, args  # pyright: ignore[reportUnusedParameter]
     ) -> bool:
         """
         Return True to suppress a specific mmproj KV field from passthrough.
@@ -292,22 +293,15 @@ class BaseModelCore(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def inject_kv(
-        self,
-        writer: GGUFWriter,
-        ref_fields: dict | None,
-        mmproj_fields: dict,
-        llm_fields: dict,
-        *,
-        args,
-    ) -> None:
+    def inject_kv( self, writer: GGUFWriter, ref_fields: dict | None, mmproj_fields: dict, llm_fields: dict, *, args, ) -> None:  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
         """Write all architecture-critical KV fields into writer."""
+        pass
 
     # ------------------------------------------------------------------
     # Step 8: LLM tensor renames
     # ------------------------------------------------------------------
 
-    def get_llm_renames(self, ref_fields: dict | None = None, llm_fields: dict | None =None) -> dict[str, str]:  # pyright: ignore[reportMissingTypeArgument]
+    def get_llm_renames(self, ref_fields: dict | None = None, llm_fields: dict | None =None) -> dict[str, str]:  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType, reportUnusedParameter]
         """Return a {old_name: new_name} dict for LLM tensors. Default: no renames."""
         return {}
 
@@ -317,12 +311,13 @@ class BaseModelCore(ABC):
 
     def prepare_llm(self, llm) -> None:
         """Pre-scan the LLM before the tensor write loop. Default: no-op."""
+        pass
 
     # ------------------------------------------------------------------
     # Step 10: LLM tensor drop filter
     # ------------------------------------------------------------------
 
-    def should_drop_llm_tensor(self, name: str, *, args, encoder_tensors: dict) -> bool:
+    def should_drop_llm_tensor(self, name: str, *, args) -> bool:  # pyright: ignore[reportMissingTypeArgument]
         """
         Return True to skip writing an LLM tensor to the output file.
         Default: drop a.* and v.* (they come from the mmproj instead).
@@ -334,7 +329,7 @@ class BaseModelCore(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def process_mmproj_tensors(self, mmproj, args) -> dict:
+    def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Load, rename, and pre-process all tensors from the mmproj.
 
@@ -342,6 +337,7 @@ class BaseModelCore(ABC):
         - A raw GGUFReader tensor object  (has .tensor_type, .data, .shape)
         - A (data, dtype, shape) tuple    for manually assembled tensors
         """
+        pass
 
     # ------------------------------------------------------------------
     # Step 12: Post-write hook
@@ -349,3 +345,4 @@ class BaseModelCore(ABC):
 
     def post_write_tensors(self, writer: GGUFWriter, ref, args) -> None:
         """Post-write hook for clamp transplant etc. Default: no-op."""
+        pass

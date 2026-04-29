@@ -477,7 +477,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     @override
     def should_drop_llm_tensor(
-        self, name: str, *, args, encoder_tensors: dict  # pyright: ignore[reportMissingTypeArgument]
+        self, name: str, *, args,  # pyright: ignore[reportMissingTypeArgument]
     ) -> bool:
         if name.startswith(("a.", "v.")):
             # Keep clamp scalars if the LLM already supplies them

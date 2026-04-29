@@ -19,7 +19,9 @@ Module-level helpers (used by QwenBaseModelCore and importable by qwen35.py)
 
 from __future__ import annotations
 
+from queue import Empty
 import re
+from typing import override
 import numpy as np
 from gguf import GGMLQuantizationType
 
@@ -227,6 +229,11 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
         get_llm_renames() — tensor renames specific to that variant
     """
 
+    _mmproj_param_count: int = 0 # try to account for parameters
+    _llm_param_count: int = 0
+    _param_count_written: bool = False # Likely would need to insert own for some models [mostly metadata]
+    _deepstack_indices_backup: list[int] = []; # a fall back in case we need to pull this later
+
     # ------------------------------------------------------------------
     # KV Drop Set — Qwen-shared additions to base
     # ------------------------------------------------------------------
@@ -252,6 +259,7 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
     # mmproj Tensor Processing — Full Qwen pipeline
     # ------------------------------------------------------------------
 
+    @override
     def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Full Qwen mmproj pipeline:
@@ -261,6 +269,11 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
         4. Process tensors (rename + split fused QKV)
         5. Stack temporal patch embeddings
         """
+
+        self._mmproj_param_count = sum(
+        int(np.prod(t.shape)) for t in mmproj.tensors
+        )
+
         mf = mmproj.fields
         vit_hidden = int(_read_scalar(mf, "clip.vision.embedding_length"))
         vit_depth  = int(_read_scalar(mf, "clip.vision.block_count"))
@@ -271,6 +284,7 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
         if ds_idxs:
             print(f"  Deepstack indices (from mmproj tensors): {ds_idxs}")
             print(f"  Deepstack indices: {ds_idxs}")
+            self._deepstack_indices_backup = ds_idxs
         else:
             pass # print("  No deepstack tensors found in mmproj")
 
@@ -293,3 +307,12 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
     def get_llm_renames(self, ref_fields: dict | None = None, llm_fields: dict | None = None) -> dict[str, str]:  # pyright: ignore[reportMissingTypeArgument]
         """Return a {old_name: new_name} dict for LLM tensors. Default: no renames."""
         return {}
+
+    #
+    # Try to account for text parameters
+    #
+    @override
+    def prepare_llm(self, llm) -> None:
+        self._llm_param_count = sum(
+            int(np.prod(t.shape)) for t in llm.tensors
+        )

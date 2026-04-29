@@ -279,6 +279,7 @@ def main() -> None:
     print("\nLoading mmproj...")
     mmproj = GGUFReader(args.mmproj)
     encoder_tensors = core.process_mmproj_tensors(mmproj, args)
+    encoder_tensors_len = len(encoder_tensors)
 
     # ── 6. Load LLM ──────────────────────────────────────────────────
     print("\nLoading LLM...")
@@ -310,7 +311,7 @@ def main() -> None:
     for field in llm.fields.values():
         if field.name in kv_drop:
             continue
-        copy_field(writer, field, name=kv_renames.get(field.name, field.name))
+        copy_field(writer, field, name=kv_renames.get(field.name, field.name))  # pyright: ignore[reportArgumentType]
 
     # ── 9. Copy mmproj KV ────────────────────────────────────────────
     print("Copying mmproj KV metadata...")
@@ -323,7 +324,7 @@ def main() -> None:
             continue
         if renamed != field.name:
             print(f"  KV rename: {field.name} → {renamed}")
-        copy_field(writer, field, name=renamed)
+        copy_field(writer, field, name=renamed)  # pyright: ignore[reportArgumentType]
 
     # ── 10. Inject controlled KV fields ─────────────────────────────
     print("Injecting controlled KV fields...")
@@ -342,7 +343,7 @@ def main() -> None:
 
     for t in tqdm(llm.tensors, desc="Writing LLM tensors", unit="tensor", leave=True):
         final_name = llm_renames.get(t.name, t.name)
-        if core.should_drop_llm_tensor(final_name, args=args, encoder_tensors=encoder_tensors):
+        if core.should_drop_llm_tensor(final_name, args=args,): #encoder_tensors=encoder_tensors):
             dropped_tensors.append(final_name)
             continue
         data = np.asarray(t.data)
@@ -370,12 +371,14 @@ def main() -> None:
             data, dtype, shape = t_or_tuple
         write_tensor(writer, final_name, data, dtype, shape)
 
+    del encoder_tensors
+
     # ── 14. Post-write hook ──────────────────────────────────────────
     core.post_write_tensors(writer, ref, args)
 
     # ── 14.5 Pre-sync cleanup ─────────────────────────────────────────
 
-    print("Releasing sources...")
+    print("Releasing sources...🧹")
     if ref is not None:
         del ref
 
@@ -401,8 +404,8 @@ def main() -> None:
     print(f"\nOutput         : {args.output}")  # pyright: ignore[reportAny]
     print(f"  LLM tensors  : {written_llm}"
           + (f" ({len(dropped_tensors)} dropped)" if dropped_tensors else ""))
-    print(f"  Enc tensors  : {len(encoder_tensors)}")  # pyright: ignore[reportUnknownArgumentType]
-    print(f"  Total        : {written_llm + len(encoder_tensors)}")  # pyright: ignore[reportUnknownArgumentType]
+    print(f"  Enc tensors  : {encoder_tensors_len}")  # pyright: ignore[reportUnknownArgumentType]
+    print(f"  Total        : {written_llm + encoder_tensors_len}")  # pyright: ignore[reportUnknownArgumentType]
     print("Done.")
 
 

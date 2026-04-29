@@ -58,7 +58,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
     STATUS        = "stable"
 
     @classmethod
-    def get_help_info(cls) -> dict:
+    def get_help_info(cls) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         return {
             "description":   "Qwen3-VL dense (e.g. 7B) — QKV split + deepstack, no blob required",
             "requires_blob": False,
@@ -121,27 +121,38 @@ class Qwen3VLModelCore(QwenBaseModelCore):
         writer.add_uint32(f"{a}.vision.num_positional_embeddings", 2304)
         writer.add_float32(f"{a}.vision.rope.freq_base",           10000.0)
         # shortest_edge uses pixel-count semantics for Jan/Qwen3-VL mmprojs
+
+        writer.add_uint32(f"{a}.vision.longest_edge",              16777216)
         writer.add_uint32(f"{a}.vision.shortest_edge",             65536)
 
         # RoPE / MRoPE
         writer.add_array(f"{a}.mrope_sections", [24, 20, 20])
 
         # Deepstack
-        writer.add_array(f"{a}.vision.deepstack_visual_indexes", get_deepstack_array(mmproj_fields))#[8, 16, 24])
+        print("Writing deepstack ... ", end='')
+        writer.add_array(f"{a}.vision.deepstack_visual_indexes", self._deepstack_indices_backup) # writer.add_array(f"{a}.vision.deepstack_visual_indexes", get_deepstack_array(mmproj_fields)) # [8, 16, 24])
+        print("done")
 
         # Tokenizer
         writer.add_bool( "tokenizer.ggml.add_eos_token",     False)
         writer.add_bool( "tokenizer.ggml.add_padding_token", False)
         writer.add_array("tokenizer.ggml.eos_token_ids",     [151645, 151643])
 
+        # writer.add_array(f"{a}.vision.deepstack_visual_indexes", self._deepstack_indices_backup) # see! useful here for a quick patch.
+
         # Parameter count — prefer LLM's own value so finetuned variants
         # carry the correct count; fall back to the known 7B dense value.
+        """
         param_count = (
             int(_read_scalar(llm_fields, "general.parameter_count"))  # pyright: ignore[reportArgumentType]
             if "general.parameter_count" in llm_fields
             else 8_767_123_696
         )
         writer.add_uint64("general.parameter_count", param_count)
+        """
+        if "general.parameter_count" in llm_fields:
+            writer.add_uint64("general.parameter_count", int(_read_scalar(llm_fields, "general.parameter_count")))  # pyright: ignore[reportArgumentType, reportAny]
+            self._param_count_written = True # unlikly chance
 
         # File type — must reflect the actual LLM tensor format
         _ft = (
@@ -150,6 +161,16 @@ class Qwen3VLModelCore(QwenBaseModelCore):
             else 32
         )
         writer.add_uint32("general.file_type", _ft)
+
+
+    @override
+    def post_write_tensors(self, writer, ref, args) -> None:
+        """
+        Goal is to just assume a parameter_count; unless we want to assume a wrong constant...
+        """
+        if not self._param_count_written:
+            total = self._llm_param_count + self._mmproj_param_count
+            writer.add_uint64("general.parameter_count", total)
 
 
 # ---------------------------------------------------------------------------

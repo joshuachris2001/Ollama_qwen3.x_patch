@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import override
+#from typing import override
 
 import numpy as np
 from gguf import GGUFWriter, GGUFValueType, GGMLQuantizationType
@@ -109,7 +109,7 @@ class Gemma4ModelCore(BaseModelCore):
     STATUS: str        = "stable"
 
     @classmethod
-    @override
+    #@override
     def get_help_info(cls):
         return {
             "description":   "Gemma 4 — all sizes (E2B, E4B, 26B MoE, 31B dense)",
@@ -131,7 +131,7 @@ class Gemma4ModelCore(BaseModelCore):
     # ── CLI extension ────────────────────────────────────────────────────────
 
     @classmethod
-    @override
+    #@override
     def add_args(cls, parser) -> None:
         g = parser.add_argument_group("Gemma 4 options")
         g.add_argument(
@@ -150,7 +150,7 @@ class Gemma4ModelCore(BaseModelCore):
         )
 
     @classmethod
-    @override
+    #@override
     def format_args_summary(cls, args) -> str | None:
         return (
             f"Gemma4 Multimodal functions:\n"
@@ -159,7 +159,7 @@ class Gemma4ModelCore(BaseModelCore):
         )
 
     @classmethod
-    @override
+    #@override
     def validate_args(cls, args) -> None:
         if not args.vision and not args.audio:
             sys.exit(
@@ -169,7 +169,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── KV drop set ──────────────────────────────────────────────────────────
 
-    @override
+    #@override
     def get_kv_drop(self) -> set[str]:
         a = self.arch
         extra: set[str] = {
@@ -217,7 +217,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── KV renames ───────────────────────────────────────────────────────────
 
-    @override
+    #@override
     def get_kv_renames(self) -> dict[str, str]:
         a = self.arch
         return {
@@ -234,7 +234,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── mmproj KV conditional filter ─────────────────────────────────────────
 
-    @override
+    #@override
     def should_skip_mmproj_kv(
         self, field_name: str, renamed_key: str, args
     ) -> bool:
@@ -459,7 +459,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── Pre-scan LLM for clamp scalars ───────────────────────────────────────
 
-    @override
+    #@override
     def prepare_llm(self, llm) -> None:
         """
         Check whether the LLM GGUF already contains clamp scalar tensors.
@@ -475,7 +475,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── LLM tensor drop filter ────────────────────────────────────────────────
 
-    @override
+    #@override
     def should_drop_llm_tensor(
         self, name: str, *, args,  # pyright: ignore[reportMissingTypeArgument]
     ) -> bool:
@@ -488,7 +488,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── mmproj tensor processing ──────────────────────────────────────────────
 
-    @override
+    #@override
     def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Gemma 4 mmproj passthrough with:
@@ -570,7 +570,7 @@ class Gemma4ModelCore(BaseModelCore):
 
     # ── Post-write: synthesise audio clamp scalars ───────────────────────────
 
-    @override
+    #@override
     def post_write_tensors(self, writer: GGUFWriter, ref, args) -> None:
         """
         Gemma4ClippableLinear layers need 1-element F32 clamp scalar tensors

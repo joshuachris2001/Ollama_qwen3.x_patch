@@ -15,7 +15,7 @@ Reference: ollama/ollama convert/convert_gemma3.go
 from __future__ import annotations
 
 import sys
-from typing import override
+#from typing import override
 
 from gguf import GGUFWriter
 import re
@@ -129,7 +129,7 @@ class Gemma3ModelCore(BaseModelCore):
     STATUS: str = STATUS_EXPERIMENTAL
 
     @classmethod
-    @override
+    #@override
     def get_help_info(cls) -> dict:
         return {
             "description": "Gemma 3 vision models (4B / 12B / 27B)",
@@ -140,7 +140,7 @@ class Gemma3ModelCore(BaseModelCore):
 
     # ── KV drop ──────────────────────────────────────────────────────────────
 
-    @override
+    #@override
     def get_kv_drop(self) -> set[str]:
         a = self.arch
         return super().get_kv_drop() | {
@@ -178,7 +178,7 @@ class Gemma3ModelCore(BaseModelCore):
 
     # ── KV renames ───────────────────────────────────────────────────────────
 
-    @override
+    #@override
     def get_kv_renames(self) -> dict[str, str]:
         a = self.arch
         # TODO: VERIFY — same clip.vision.* mapping as Gemma4; confirm field names
@@ -196,7 +196,7 @@ class Gemma3ModelCore(BaseModelCore):
 
     # ── KV injection ─────────────────────────────────────────────────────────
 
-    @override
+    #@override
     def inject_kv(self, writer: GGUFWriter, ref_fields, mmproj_fields, llm_fields, *, args) -> None:
         a = self.arch
 
@@ -322,7 +322,7 @@ class Gemma3ModelCore(BaseModelCore):
 
     # ── mmproj tensor processing ──────────────────────────────────────────────
 
-    @override
+    #@override
     def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Gemma3 mmproj vision tensor passthrough with per-block renames applied.

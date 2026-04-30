@@ -35,7 +35,7 @@ GGUF when present so finetuned MoE models carry the correct value.
 
 from __future__ import annotations
 from ctypes import Array
-from typing import override
+#from typing import override
 
 from gguf import GGUFWriter
 
@@ -95,7 +95,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
     # KV Injection — All values hardcoded (verified against official blob)
     # ------------------------------------------------------------------
 
-    @override
+    #@override
     def inject_kv(
         self,
         writer: GGUFWriter,
@@ -163,7 +163,7 @@ class Qwen3VLModelCore(QwenBaseModelCore):
         writer.add_uint32("general.file_type", _ft)
 
 
-    @override
+    #@override
     def post_write_tensors(self, writer, ref, args) -> None:
         """
         Goal is to just assume a parameter_count; unless we want to assume a wrong constant...

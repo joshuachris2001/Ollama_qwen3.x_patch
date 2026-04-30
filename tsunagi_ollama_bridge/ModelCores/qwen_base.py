@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from queue import Empty
 import re
-from typing import override
+#from typing import override
 import numpy as np
 from gguf import GGMLQuantizationType
 
@@ -259,7 +259,7 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
     # mmproj Tensor Processing — Full Qwen pipeline
     # ------------------------------------------------------------------
 
-    @override
+    #@override
     def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Full Qwen mmproj pipeline:
@@ -311,7 +311,7 @@ class QwenBaseModelCore(BaseModelCore):  # pyright: ignore[reportImplicitAbstrac
     #
     # Try to account for text parameters
     #
-    @override
+    #@override
     def prepare_llm(self, llm) -> None:
         self._llm_param_count = sum(
             int(np.prod(t.shape)) for t in llm.tensors

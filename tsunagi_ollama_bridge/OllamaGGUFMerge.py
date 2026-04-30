@@ -192,11 +192,18 @@ def _parse_args(model_registry: dict) -> argparse.Namespace:  # pyright: ignore[
                    help="Show custom help and exit")
     p.add_argument("--models", action="store_true", default=False, help="List all available model types and exit.")
 
-    # Let every discovered plugin extend the parser with its own flags. [come back later]
-    #for cls in model_registry.values():
-    #    cls.add_args(p)
+    # Parse the arguments once to get the model type
+    args, remaining = p.parse_known_args()
 
-    return p.parse_args()
+    # If a model type is specified, add its specific arguments
+    if args.model_type:
+        cls = model_registry[args.model_type]
+        cls.add_args(p)
+
+        # Parse the arguments again with the model-specific arguments
+        args = p.parse_args()
+
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +244,6 @@ def main() -> None:
     #nstantiate and validate
     #
     core = load_model_core(model_registry, args.model_type)
-
-    core.add_args(args)
 
     if core.REQUIRES_BLOB and not args.blob:
         sys.exit(f"ERROR: --blob is required for model type '{args.model_type}'")

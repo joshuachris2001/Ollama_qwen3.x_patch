@@ -317,7 +317,7 @@ class BaseModelCore(ABC):
     # Step 10: LLM tensor drop filter
     # ------------------------------------------------------------------
 
-    def should_drop_llm_tensor(self, name: str, *, args) -> bool:  # pyright: ignore[reportMissingTypeArgument]
+    def should_drop_llm_tensor(self, name: str, *, args, encoder_tensors: any | None = None) -> bool:  # pyright: ignore[reportMissingTypeArgument]
         """
         Return True to skip writing an LLM tensor to the output file.
         Default: drop a.* and v.* (they come from the mmproj instead).

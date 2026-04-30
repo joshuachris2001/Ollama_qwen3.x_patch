@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import time
+from tkinter import Button
 import traceback
 from typing import final
 import hashlib
@@ -22,14 +23,14 @@ from huggingface_hub.utils import EntryNotFoundError
 
 from tsunagi_ollama_bridge.ModelCores import discover_models, load_model_core  # pyright: ignore[reportMissingImports]
 from tsunagi_ollama_bridge.ModelCores.base import (  # pyright: ignore[reportMissingImports]
-    FLOAT_TYPES, SKIP_META, copy_field, write_tensor, _read_scalar,
+    FLOAT_TYPES, SKIP_META, copy_field, write_tensor, _read_scalar, STATUS_STABLE, STATUS_STUB, STATUS_EXPERIMENTAL
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 LLM_CAP_BYTES    = 23 * 1024 ** 3   # 23 GB
-MMPROJ_CAP_BYTES =  1 * 1024 ** 3   #  1 GB
+MMPROJ_CAP_BYTES =  2 * 1024 ** 3   #  2 GB
 
 MAX_OPTS = 8
 
@@ -69,7 +70,7 @@ _start_age_cleanup_worker()
 # ---------------------------------------------------------------------------
 # Model registry — one pass at startup
 # ---------------------------------------------------------------------------
-def get_supported_models() -> dict:
+def get_supported_models() -> dict:  # pyright: ignore[reportMissingTypeArgument]
     registry = discover_models()
     return {k: v for k, v in registry.items() if not v.REQUIRES_BLOB}
 
@@ -139,7 +140,7 @@ def resolve_input(upload, repo_id: str, filename: str, cap: int, label: str) -> 
 # Args namespace
 # ---------------------------------------------------------------------------
 class _Args:
-    def __init__(self, model_type, llm, mmproj, output, extra_flags: dict | None = None):
+    def __init__(self, model_type, llm, mmproj, output, extra_flags: dict | None = None):  # pyright: ignore[reportMissingTypeArgument]
         self.model_type = model_type
         self.llm        = llm
         self.mmproj     = mmproj
@@ -149,7 +150,7 @@ class _Args:
             setattr(self, attr, val)
 
 # ---------------------------------------------------------------------------
-# Progress bar / elapsed helpers
+# Progress bar / elapsed / spinner helpers
 # ---------------------------------------------------------------------------
 def _progress_bar_html(done: int, total: int, label: str = "") -> str:
     pct = int((done / total) * 100) if total > 0 else 0
@@ -167,6 +168,24 @@ def _fmt_elapsed(start: float) -> str:
     h, rem  = divmod(elapsed, 3600)
     m, s    = divmod(rem, 60)
     return f"{h:02d}h {m:02d}m {s:02d}s"
+
+def _spinner_html(label: str) -> str:
+    return f"""<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+  <div style="width:18px;height:18px;border:2.5px solid var(--border-color-primary);border-top-color:var(--color-accent);border-radius:50%;animation:tsunagi-spin 1s linear infinite;flex-shrink:0"></div>
+  <span style="font-size:0.9rem;color:var(--body-text-color)">{label}</span>
+</div>
+<style>@keyframes tsunagi-spin{{to{{transform:rotate(360deg)}}}}</style>"""
+
+def file_url(request, path: str) -> str:
+    """Build an absolute Gradio file-serving URL (Gradio 5.x)."""
+    if request is not None:
+        try:
+            url = request.request.url
+            base = f"{url.scheme}://{url.netloc}"
+            return f"{base}/gradio_api/file={path}"  # ← was /gradio/api/file=
+        except Exception:
+            pass
+    return f"/gradio_api/file={path}"  # relative fallback
 
 # ---------------------------------------------------------------------------
 # Core merge pipeline
@@ -333,7 +352,7 @@ _MSG_NO_OPTIONS = "*No model-specific options available for this architecture.*"
 def _flag_to_attr(flag: str) -> str:
     return flag.lstrip("-").replace("-", "_")
 
-def _options_ui_updates(model_type: str) -> list:
+def _options_ui_updates(model_type: str) -> list:  # pyright: ignore[reportMissingTypeArgument]
     """
     Returns MAX_OPTS checkbox gr.update()s + 1 notice gr.update().
     Total length always == MAX_OPTS + 1.
@@ -365,10 +384,8 @@ def _options_ui_updates(model_type: str) -> list:
 
 # ---------------------------------------------------------------------------
 # detect_btn handler
-# Returns ALL outputs in one atomic response — no chaining, no race.
-# outputs: [arch_status, model_type_dd, run_btn, cb0…cb7, opts_notice]
 # ---------------------------------------------------------------------------
-def on_detect(llm_upload, llm_repo, llm_file) -> list:
+def on_detect(llm_upload, llm_repo, llm_file) -> list:  # pyright: ignore[reportMissingTypeArgument]
     path, msg = resolve_input(llm_upload, llm_repo, llm_file, LLM_CAP_BYTES, "LLM")
 
     if path is None:
@@ -389,16 +406,20 @@ def on_detect(llm_upload, llm_repo, llm_file) -> list:
 
 # ---------------------------------------------------------------------------
 # model_type_dd.change handler
-# Returns ALL outputs in one atomic response — same shape as on_detect minus
-# the first two (arch_status, model_type_dd are not outputs of this handler).
-# outputs: [run_btn, cb0…cb7, opts_notice]
 # ---------------------------------------------------------------------------
 def on_model_change(model_type: str) -> list:
     is_real = model_type != "AUTO DETECT" and model_type in SUPPORTED_MODELS
     return [gr.update(interactive=is_real)] + _options_ui_updates(model_type)
 
 # ---------------------------------------------------------------------------
+# Shared "empty" download area state — used for every non-terminal yield
+# ---------------------------------------------------------------------------
+_DL_STATUS_IDLE  = gr.update()          # leave download_status as-is mid-stream
+_DL_LINK_HIDDEN  = gr.update(visible=False, value="")
+
+# ---------------------------------------------------------------------------
 # Submit handler
+# outputs: [progress_html, log_box, download_btn, download_status, direct_link_box]
 # ---------------------------------------------------------------------------
 def on_submit(
     llm_upload, llm_repo, llm_file,
@@ -406,7 +427,7 @@ def on_submit(
     model_type,
     hf_push, hf_repo, hf_token,
     *opt_values,
-    request: gr.Request
+    request: gr.Request = None,
 ):
     session_hash = getattr(request, "session_hash", None) or "anonymous"
     job_dir      = _user_job_dir(session_hash)
@@ -416,46 +437,79 @@ def on_submit(
     logs = []
     def log(msg: str): logs.append(msg)
 
-    yield _progress_bar_html(0, 0, "Starting…"), "", gr.update(interactive=False)
+    submit_start = time.time()
 
+    # ── helpers scoped to this run ──────────────────────────────────
+    def _spin(label: str) -> str:
+        return _spinner_html(f"{label} {_fmt_elapsed(submit_start)}")
+
+    def _fail_yield(bar_label: str, status_msg: str):
+        return (
+            _progress_bar_html(0, 0, bar_label),
+            "\n".join(logs),
+            gr.update(interactive=False),
+            gr.update(value=f"<span style='color:var(--body-text-color-subdued);font-size:0.9rem'>{status_msg}</span>"),
+            _DL_LINK_HIDDEN,
+        )
+
+    # ── initial yield ───────────────────────────────────────────────
+    yield (
+        _progress_bar_html(0, 0, "Starting…"),
+        "",
+        gr.update(interactive=False),
+        _spinner_html(f"⏳ Starting… {_fmt_elapsed(submit_start)}"),
+        _DL_LINK_HIDDEN,
+    )
+
+    # ── resolve LLM ─────────────────────────────────────────────────
     llm_path, llm_msg = resolve_input(llm_upload, llm_repo, llm_file, LLM_CAP_BYTES, "LLM")
     log(llm_msg)
     if llm_path is None:
-        yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
+        yield _fail_yield("Failed", "❌ LLM input failed.")
         return
 
+    # ── auto-detect architecture ─────────────────────────────────────
     if model_type == "AUTO DETECT":
         log("Auto-detecting architecture from LLM GGUF...")
-        yield _progress_bar_html(0, 0, "Detecting architecture…"), "\n".join(logs), gr.update()
+        yield (
+            _progress_bar_html(0, 0, "Detecting architecture…"),
+            "\n".join(logs),
+            gr.update(interactive=False),
+            _spin("⏳ Detecting architecture…"),
+            _DL_LINK_HIDDEN,
+        )
         arch = detect_architecture(llm_path)
         if arch is None:
             log("❌ Could not read general.architecture — try selecting manually.")
-            yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
+            yield _fail_yield("Failed", "❌ Auto-detect failed.")
             return
         if arch not in SUPPORTED_MODELS:
             log(f"❌ Detected architecture '{arch}' is not supported.\nSupported: {', '.join(MODEL_CHOICES)}")
-            yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
+            yield _fail_yield("Failed", f"❌ Architecture '{arch}' not supported.")
             return
         log(f"✓ Auto-detected architecture: {arch}")
         model_type = arch
 
+    # ── resolve mmproj ───────────────────────────────────────────────
     mmproj_path, mm_msg = resolve_input(mmproj_upload, mmproj_repo, mmproj_file, MMPROJ_CAP_BYTES, "mmproj")
     log(mm_msg)
     if mmproj_path is None:
-        yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
+        yield _fail_yield("Failed", "❌ mmproj input failed.")
         return
 
     if not model_type:
         log("❌ No model type selected.")
-        yield _progress_bar_html(0, 0, "Failed"), "\n".join(logs), gr.update()
+        yield _fail_yield("Failed", "❌ No model type selected.")
         return
 
+    # ── build extra flags ────────────────────────────────────────────
     options     = MODEL_OPTIONS.get(model_type, [])
     extra_flags = {
         _flag_to_attr(flag): bool(opt_values[i])
         for i, (flag, _) in enumerate(options)
     }
 
+    # ── run merge pipeline ───────────────────────────────────────────
     last_log_text = "\n".join(logs)
     raw_output    = os.path.join(job_dir, "building.gguf")
     try:
@@ -465,19 +519,37 @@ def on_submit(
             last_log_text = log_text
             if file_path is not None:
                 raw_output = file_path
-            yield bar_html, log_text, gr.update()
+            yield (
+                bar_html,
+                log_text,
+                gr.update(interactive=False),
+                _spin("⚙️ Building monolith…"),
+                _DL_LINK_HIDDEN,
+            )
     except Exception:
-        yield _progress_bar_html(0, 0, "Failed"), f"{last_log_text}\n❌ Merge failed:\n{traceback.format_exc()}", gr.update()
+        log(f"❌ Merge crashed:\n{traceback.format_exc()}")
+        yield (
+            _progress_bar_html(0, 0, "Failed"),
+            f"{last_log_text}\n❌ Merge failed:\n{traceback.format_exc()}",
+            gr.update(interactive=False),
+            gr.update(value="<span style='color:var(--body-text-color-subdued);font-size:0.9rem'>❌ Merge crashed — see log.</span>"),
+            _DL_LINK_HIDDEN,
+        )
         return
 
     if raw_output is None:
-        yield _progress_bar_html(0, 0, "Failed"), last_log_text, gr.update()
+        yield _fail_yield("Failed", "❌ No output file produced.")
         return
 
+    # ── rename to final path ─────────────────────────────────────────
     merged_path = os.path.join(job_dir, "merged.gguf")
     os.rename(raw_output, merged_path)
     output_path = merged_path
 
+    # ── build direct-link URL ─────────────────────────────────────────
+    #file_url = _file_url(request, output_path)
+
+    # ── optional HF push ─────────────────────────────────────────────
     if hf_push and hf_repo and hf_token:
         try:
             upload_file(
@@ -488,15 +560,25 @@ def on_submit(
                 _progress_bar_html(1, 1, "Hub upload complete"),
                 f"{last_log_text}\n✓ Uploaded to HF Hub: {hf_repo}/merged.gguf",
                 gr.update(value=output_path, interactive=True),
+                gr.update(value="<span style='font-size:0.9rem'>✓ Build &amp; upload complete</span>"),
+                gr.update(value="", visible=True),
             )
         except Exception as e:
             yield (
                 _progress_bar_html(1, 1, "Hub upload failed"),
                 f"{last_log_text}\n⚠ Hub upload failed: {e}\nFalling back to direct download.",
                 gr.update(value=output_path, interactive=True),
+                gr.update(value="<span style='font-size:0.9rem'>⚠ Hub upload failed — use direct link below.</span>"),
+                gr.update(value="", visible=True),
             )
     else:
-        yield _progress_bar_html(1, 1, "Ready for download"), last_log_text, gr.update(value=output_path, interactive=True)
+        yield (
+            _progress_bar_html(1, 1, "Ready for download"),
+            last_log_text,
+            gr.update(value=output_path, interactive=True),
+            gr.update(value="<span style='font-size:0.9rem'>✓ Build complete</span>"),
+            gr.update(value=file_url(request, output_path), visible=True)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -552,15 +634,22 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
             interactive=True,
         )
 
-    # Supported architectures table — includes Options column from pre-scan
     def _arch_row(k: str) -> str:
-        opts     = MODEL_OPTIONS.get(k, [])
+        model_core = SUPPORTED_MODELS.get(k)
+        desc = model_core.get_help_info()["description"]
+        if not desc:
+            desc = "[NO Description aval]"
+        status_icon = "✅"  # Default for stable models
+        if model_core and hasattr(model_core, 'STATUS'):
+            if model_core.STATUS == "experimental" or model_core.STATUS == STATUS_EXPERIMENTAL:
+                status_icon = "⚠️"
+        opts = MODEL_OPTIONS.get(k, [])
         opts_str = ", ".join(f"`{flag}`" for flag, _ in opts) if opts else "—"
-        return f"| `{k}` | ✓ | {opts_str} |"
+        return f"| `{k}` | {status_icon} | {opts_str} | {desc}"
 
     with gr.Accordion("Supported architectures", open=False):
         gr.Markdown(
-            "| Model | Status | Options |\n|---|---|---|\n"
+            "| Model | Status | Options | Description |\n|---|---|---|---|\n"
             + "\n".join(_arch_row(k) for k in MODEL_CHOICES)
         )
 
@@ -576,25 +665,17 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
             cb = gr.Checkbox(label="", value=False, visible=False, interactive=True)
             opt_checkboxes.append(cb)
 
-    # Starts visible — correct for AUTO DETECT initial state
     opts_notice = gr.Markdown(value=_MSG_NO_MODEL, visible=True)
 
-    # ── Shared output list used by BOTH handlers ────────────────────
-    # [run_btn, cb0…cb7, opts_notice]  — MAX_OPTS + 2 items
+    # ── Shared output list used by BOTH detect/model-change handlers ─
     _opts_outputs = [run_btn] + opt_checkboxes + [opts_notice]
 
-    # detect_btn: single atomic response covering every output it touches.
-    # Does NOT write model_type_dd from a second step — all outputs resolved
-    # in one fn call, returned together, applied by Gradio in one update.
     detect_btn.click(
         fn=on_detect,
         inputs=[llm_upload, llm_repo, llm_file],
         outputs=[arch_status, model_type_dd] + _opts_outputs,
     )
 
-    # model_type_dd.change: handles manual selection.
-    # Separate handler, separate outputs — no overlap with detect_btn outputs
-    # so there is no possibility of a concurrent write to the same component.
     model_type_dd.input(
         fn=on_model_change,
         inputs=[model_type_dd],
@@ -617,22 +698,63 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
     progress_html = gr.HTML(value="", visible=True)
     log_box       = gr.Textbox(label="Log", lines=18, interactive=False)
 
-    download_btn = gr.DownloadButton(
-        label="⬇️ Download merged.gguf",
-        value=None, interactive=False,
-        variant="primary", size="lg",
-        elem_id="tsunagi-download-btn",
-    )
+    # Spinner shown while building; replaced by a status line when done
+    download_status = gr.HTML(value="", visible=True)
 
-    gr.HTML("""
-    <style>
-      #tsunagi-download-btn { margin-top: 8px; }
-      #tsunagi-download-btn button {
-        width: 100%; min-height: 56px;
-        font-size: 1.15rem; font-weight: 600; letter-spacing: 0.02em;
-      }
-    </style>
-    """)
+    with gr.Group():
+        download_btn = gr.DownloadButton(
+            label="⬇️ Download merged.gguf",
+            value=None,
+            interactive=False,
+            variant="primary",
+            size="lg",
+            elem_id="tsunagi-download-btn",
+        )
+        direct_link_box = gr.Textbox(
+            label="Direct download link",
+            interactive=False,
+            buttons=['copy'],
+            placeholder="Link will appear here after the build completes.",
+            visible=False,
+            elem_id="tsunagi-link-box",
+        )
+
+        gr.HTML("""
+        <style>
+          #tsunagi-download-btn { margin-top: 4px; }
+          #tsunagi-download-btn button {
+            width: 100%; min-height: 56px;
+            font-size: 1.15rem; font-weight: 600; letter-spacing: 0.02em;
+          }
+        </style>
+        <script>
+        (function () {
+          function syncLink() {
+            var anchor = document.querySelector('#tsunagi-download-btn a[href]');
+            if (!anchor) return;
+            var href = anchor.href;
+            // Ignore empty or bare page URLs
+            if (!href || href === window.location.href || href.endsWith('#')) return;
+            var box = document.querySelector('#tsunagi-link-box textarea');
+            if (box && box.value !== href) {
+              box.value = href;
+              box.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+          }
+          var obs = new MutationObserver(syncLink);
+          function attach() {
+            var root = document.querySelector('#tsunagi-download-btn') || document.body;
+            obs.observe(root, {childList: true, subtree: true,
+                               attributes: true, attributeFilter: ['href']});
+          }
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attach);
+          } else {
+            attach();
+          }
+        })();
+        </script>
+        """)
 
     run_btn.click(
         fn=on_submit,
@@ -643,17 +765,17 @@ with gr.Blocks(title="Tsunagi — Ollama WebUI") as demo:
             hf_push, hf_repo, hf_token,
             *opt_checkboxes,
         ],
-        outputs=[progress_html, log_box, download_btn],
+        outputs=[progress_html, log_box, download_btn, download_status, direct_link_box],
     )
 
     gr.Markdown(
         """
         ---
-        *Tsunagi is not affiliated with Ollama, Inc. Models produced by this tool may differ
+        *Tsunagi is not affiliated with Ollama. Models produced by this tool may differ
         from models produced by official Ollama tooling.*
         *Licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).*
         """
     )
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Default())
+    demo.launch(theme=gr.themes.Default(), allowed_paths=[_TMPDIR])

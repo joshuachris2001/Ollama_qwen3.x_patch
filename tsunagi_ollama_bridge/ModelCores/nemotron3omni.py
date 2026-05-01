@@ -149,7 +149,7 @@ _AUDIO_TOP_RENAMES: dict[str, str] = {
 class Nemotron3OmniModelCore(BaseModelCore):
     """Merge plugin for NVIDIA Nemotron 3 Nano Omni (30B-A3B, RADIO vision + Parakeet audio)."""
 
-    MODEL_TYPE: str = "nemotron3omni"
+    MODEL_TYPE: str = "nemotron_h_omni"
     REQUIRES_BLOB: bool = False
     STATUS: str = STATUS_EXPERIMENTAL
 
@@ -168,7 +168,7 @@ class Nemotron3OmniModelCore(BaseModelCore):
     def __init__(self, arch: str) -> None:
         super().__init__(arch)
         # Detected in prepare_llm() — "nemotron_h" or "nemotron_h_moe"
-        self._llm_arch: str = "nemotron_h"
+        self._llm_arch: str = "nemotron_h_moe"
         self._is_moe: bool = False
 
     # ---- CLI ---------------------------------------------------------------

@@ -86,52 +86,6 @@ from .base import (
 )
 
 # ---------------------------------------------------------------------------
-# Audio tensor drops - no schema slot exists for these
-# ---------------------------------------------------------------------------
-
-_AUDIO_DROP_SUFFIXES: frozenset[str] = frozenset({
-    # Batch-normalisation (Parakeet SSConvEncoder uses BN; MMPROJ schema has no slot)
-    "conv_bn.bias",
-    "conv_bn.running_mean",
-    "conv_bn.running_var",
-    "conv_bn.weight",
-    # Norm .bias (schema only accepts .weight for all audio norms)
-    "attn_norm.bias",
-    "conv_norm.bias",
-    "ffn1_norm.bias",
-    "ffn2_norm.bias",
-    "out_norm.bias",
-})
-
-# ---------------------------------------------------------------------------
-# Per-block audio tensor renames  (suffix -> new suffix)
-# Corrects Parakeet naming to llama.cpp MMPROJ schema names.
-# ---------------------------------------------------------------------------
-
-_AUDIO_BLK_RENAMES: dict[str, str] = {
-    # Attention norms
-    "attn_norm.weight":      "ln1.weight",          # A_ENC_INPUT_NORM   -> a.blk.N.ln1
-    "out_norm.weight":       "ln2.weight",           # A_ENC_OUTPUT_NORM  -> a.blk.N.ln2
-
-    # Positional bias tensors (no .weight suffix - bare tensor names)
-    "attn_bias_u":           "pos_bias_u",           # A_ENC_POS_BIAS_U
-    "attn_bias_v":           "pos_bias_v",           # A_ENC_POS_BIAS_V
-
-    # Relative key projection
-    "attn_rel_k.weight":     "attn_k_rel.weight",    # A_ENC_ATTN_K_REL
-
-    # FFN first sub-block: ffn1_* -> ffn_*
-    "ffn1_down.weight":      "ffn_down.weight",      # A_ENC_FFN_DOWN
-    "ffn1_up.weight":        "ffn_up.weight",        # A_ENC_FFN_UP
-    "ffn1_norm.weight":      "ffn_norm.weight",      # A_ENC_FFN_NORM
-
-    # FFN second sub-block: ffn2_* -> ffn_*_1
-    "ffn2_down.weight":      "ffn_down_1.weight",    # A_ENC_FFN_DOWN_1
-    "ffn2_up.weight":        "ffn_up_1.weight",      # A_ENC_FFN_UP_1
-    "ffn2_norm.weight":      "ffn_norm_1.weight",    # A_ENC_FFN_NORM_1
-}
-
-# ---------------------------------------------------------------------------
 # Top-level (non-block) audio tensor renames
 # TBD: fill in after reading actual mmproj.gguf tensor names
 # ---------------------------------------------------------------------------
@@ -229,7 +183,7 @@ class Nemotron3OmniModelCore(BaseModelCore):
             "expert_count", "expert_used_count", "expert_shared_count",
             "expert_feed_forward_length", "expert_shared_feed_forward_length",
             "expert_weights_norm", "expert_weights_scale",
-            "expert_group_count", "moe_latent_size",
+            "expert_group_count", "moe_latent_size", "expert_group_used_count", "attention.layer_norm_epsilon",
         )
         extra: set[str] = set()
         for s in _NH_SUFFIXES:
@@ -254,6 +208,8 @@ class Nemotron3OmniModelCore(BaseModelCore):
             f"{a_out}.audio.conv_kernel_size",
             f"{a_out}.audio.embedding_length",
             f"{a_out}.audio.feed_forward_length",
+
+            "tokenizer.ggml.pre", "tokenizer.ggml.eos_token_ids", "general.parameter_count"
         }
         return super().get_kv_drop() | extra
 
@@ -475,9 +431,43 @@ class Nemotron3OmniModelCore(BaseModelCore):
                if "general.file_type" in llm_fields else 32)
         writer.add_uint32("general.file_type", _ft)
 
+        # LLM fixes & overrides
+        writer.add_float32(f"{a_out}.attention.layer_norm_epsilon", float(_llm("attention.layer_norm_rms_epsilon")))
+        writer.add_uint32(f"{a_out}.rope.dimension_count", 128)  # NemotronH default
+        writer.add_uint32(f"{a_out}.context_length", 131072)     # Cap down from 1048576
+
+        # Tokenizer fixes
+        writer.add_string("tokenizer.ggml.pre", "default")
+        writer.add_array("tokenizer.ggml.eos_token_ids", [2, 11])
+        writer.add_uint64("general.parameter_count", 33013666128)
+
+        # Vision constants from Ollama
+        if args.vision:
+            writer.add_uint32(f"{a_out}.vision.image_size", 512)
+            writer.add_uint32(f"{a_out}.vision.max_tiles", 12)
+            writer.add_uint32(f"{a_out}.vision.min_num_patches", 1024)
+            writer.add_uint32(f"{a_out}.vision.max_num_patches", 13312)
+            writer.add_bool(f"{a_out}.vision.use_thumbnail", True)
+            writer.add_uint32(f"{a_out}.vision.image_token_id", 18)
+            writer.add_uint32(f"{a_out}.vision.image_start_token_id", 19)
+            writer.add_uint32(f"{a_out}.vision.image_end_token_id", 20)
+
+        # Audio constants from Ollama
+        if args.audio:
+            writer.add_uint32(f"{a_out}.audio.conv_kernel_size", 9)
+            writer.add_uint32(f"{a_out}.audio.num_mel_bins", 128)
+            writer.add_uint32(f"{a_out}.audio.sample_rate", 16000)
+            writer.add_uint32(f"{a_out}.audio.subsampling_factor", 8)
+            writer.add_uint32(f"{a_out}.audio.subsampling_conv_channels", 256)
+            writer.add_uint32(f"{a_out}.audio.subsampling_conv_kernel_size", 3)
+            writer.add_uint32(f"{a_out}.audio.subsampling_conv_stride", 2)
+            writer.add_uint32(f"{a_out}.audio.projection_hidden_size", 4096)
+            writer.add_bool(f"{a_out}.audio.scale_input", False)
+            writer.add_uint32(f"{a_out}.audio.sound_token_id", 27)
+
     # ---- mmproj tensor processing ------------------------------------------
 
-    def process_mmproj_tensors(self, mmproj, args) -> dict:
+    def process_mmproj_tensors(self, mmproj, args) -> dict:  # pyright: ignore[reportMissingTypeArgument]
         """
         Load Nemotron 3 Omni mmproj tensors:
         - Modality filtering (--vision / --audio)
@@ -504,7 +494,7 @@ class Nemotron3OmniModelCore(BaseModelCore):
         if has_vision and not args.vision:
             print("  NOTE: mmproj has vision tensors but --vision not set; vision will be stripped.")
 
-        encoder_tensors: dict = {}
+        encoder_tensors = {}
         skipped_audio = skipped_vision = renamed_count = dropped_count = 0
 
         for t in mmproj.tensors:
@@ -513,8 +503,19 @@ class Nemotron3OmniModelCore(BaseModelCore):
                 t.name.startswith("mm.") and not is_audio
             )
 
+            name = t.name
+
             if is_audio:
                 if args.audio:
+                    # Audio Conv Squeezes
+                    if name.startswith("a.blk.") and ".conv_dw." in name and name.endswith(".weight"):
+                        if len(t.data.shape) == 3:
+                            t.data = np.squeeze(t.data, axis=1) # Squeeze middle dim
+                    elif name.startswith("a.blk.") and (".conv_pw1." in name or ".conv_pw2." in name) and name.endswith(".weight"):
+                        if len(t.data.shape) == 3 and t.data.shape[2] == 1:
+                            t.data = np.squeeze(t.data, axis=2) # Squeeze last dim
+                    #encoder_tensors[name] = t
+                    """
                     final_name, dropped = _nemotron_omni_audio_rename(t.name)
                     if dropped:
                         dropped_count += 1
@@ -524,15 +525,53 @@ class Nemotron3OmniModelCore(BaseModelCore):
                         print(f"  tensor rename: {t.name} -> {final_name}")
                         renamed_count += 1
                     encoder_tensors[final_name] = t
+                    """
                 else:
                     skipped_audio += 1
             elif is_vision:
                 if args.vision:
-                    encoder_tensors[t.name] = t
+                    # 1. Vision Projector & Class renames
+
+                    if name == "mm.model.mlp.0.weight": name = "mm.norm.weight"
+                    elif name == "mm.model.mlp.0.bias": name = "mm.norm.bias"
+                    elif name == "mm.model.mlp.1.weight": name = "mm.1.weight"
+                    elif name == "mm.model.mlp.1.bias": name = "mm.1.bias"
+                    elif name == "mm.model.mlp.3.weight": name = "mm.2.weight"
+                    elif name == "mm.model.mlp.3.bias": name = "mm.2.bias"
+                    elif name == "v.class_embd": name = "v.cls_embd"
+
+                    # 2. Vision Position Embed (rename + squeeze [1, seq, dim] -> [seq, dim])
+                    elif name == "v.position_embd.weight":
+                        name = "v.position_embd"
+                        if t.data.ndim == 3 and t.data.shape[0] == 1:
+                            t.data = t.data.squeeze(axis=0)
+
+                    # 3. Vision Patch Embed (flatten spatial dims)
+                    elif name == "v.patch_embd.weight":
+                        # Numpy shape [16, 16, 3, 1280] -> [256, 3, 1280] -> [768, 1280]
+                        # (Matches Ollama's flattening logic)
+                        t.data = t.data.reshape(-1, t.data.shape[-1])
+
+                    # 4. Vision QKV Split
+                    elif ".attn_qkv." in name:
+                    # Split fused [3840, 1280] into 3x [1280, 1280]
+                        chunks = np.split(t.data, 3, axis=0)
+                        for part, suffix in zip(chunks, ("attn_q", "attn_k", "attn_v")):
+                            import copy
+                            clone = copy.copy(t)               # shallow copy - same class, new object
+                            clone.data = part                  # replace data slice
+                            clone.name = name.replace("attn_qkv", suffix)
+                            encoder_tensors[clone.name] = clone
+                        continue                               # skip adding original fused tensor
+
+
+                    #encoder_tensors[name] = t
                 else:
                     skipped_vision += 1
             else:
-                encoder_tensors[t.name] = t  # unknown prefix - include to be safe
+                #encoder_tensors[name] = t  # unknown prefix - include to be safe
+                pass
+            encoder_tensors[name] = t
 
         print(f"  Encoder tensors included : {len(encoder_tensors)}")
         if renamed_count:
@@ -548,34 +587,3 @@ class Nemotron3OmniModelCore(BaseModelCore):
 
     # post_write_tensors: no override needed.
     # Parakeet has no ClippableLinear layers - no clamp scalars to synthesise.
-
-
-# ---------------------------------------------------------------------------
-# Module-level audio tensor rename helper
-# ---------------------------------------------------------------------------
-
-def _nemotron_omni_audio_rename(name: str) -> tuple[str, bool]:
-    """
-    Rename a single Parakeet audio tensor from its llama.cpp GGUF name
-    to the Ollama-expected name, signalling whether to drop it entirely.
-
-    Returns: (final_name, should_drop)
-
-    Key differences vs _gemma4_audio_rename():
-    - Much larger rename set (ffn1_/ffn2_ duality, attn_norm, out_norm)
-    - Active DROP logic for BN tensors and norm .bias tensors
-    - No ln2 -> layer_pre_norm hop (that was a Gemma4-specific Ollama quirk)
-    """
-    m = re.match(r"(a\.blk\.\d+\.)(.*)", name)
-    if m:
-        prefix, suffix = m.group(1), m.group(2)
-        if suffix in _AUDIO_DROP_SUFFIXES:
-            return name, True  # signal drop
-        if suffix in _AUDIO_BLK_RENAMES:
-            return prefix + _AUDIO_BLK_RENAMES[suffix], False
-        return name, False
-
-    if name in _AUDIO_TOP_RENAMES:
-        return _AUDIO_TOP_RENAMES[name], False
-
-    return name, False

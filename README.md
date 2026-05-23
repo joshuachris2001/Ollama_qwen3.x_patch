@@ -1,5 +1,8 @@
 # 繋
 ### Project GGUF patcher for Ollama Multimodal Monoliths
+
+- I think this project is technically now deprecated, as Ollama now experimenting with direct llama.cpp handling instead of their own route. (Which makes this project moot.) 
+
 This project will take compatible models' pure llama.cpp text and mmproj models and convert them to an Ollama GGUF Monolith model.
 
 This project is modular, instead of its predecessor of spaghetti code 🍝; it is now easier to add model types and multimodal functions. 🧩

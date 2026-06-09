@@ -257,6 +257,13 @@ class Gemma4ModelCore(BaseModelCore):
         self, field_name: str, renamed_key: str, args
     ) -> bool:
         a = self.arch
+            # Unified (12B): clip.* keys pass through as-is — don't strip them
+        if self._unified:
+            if field_name.startswith("clip.audio."):
+                return True  # audio still injected explicitly in inject_kv
+            return False  # let all other clip.* through unchanged
+        # Traditional arch: strip vision KV when --vision not requested
+
         # Strip vision KV when --vision is not requested
         if not args.vision and (
             field_name.startswith("clip.vision.")

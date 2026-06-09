@@ -591,7 +591,7 @@ class Gemma4ModelCore(BaseModelCore):
         if mmproj_clamps:
             print(f"  Clamp scalars in mmproj  : {len(mmproj_clamps)} (synthesis will skip these)")
 
-        self._unified = _is_unified_arch(mmproj)
+        self._unified = self._is_unified_arch(mmproj)
 
         return encoder_tensors
 

@@ -58,6 +58,18 @@ from .base import (
 )
 
 # ---------------------------------------------------------------------------
+# I need to look for unified arches (Gemma4 12B)
+# ---------------------------------------------------------------------------
+
+def _is_unified_arch(self, mmproj_fields: dict) -> bool:
+    """12B unified arch uses gemma4uv/gemma4ua projector types."""
+    ptype = mmproj_fields.get("clip.vision.projector_type")
+    if ptype is None:
+        return False
+    val = bytes(ptype.parts[ptype.data[0]]).decode("utf-8")
+    return val in ("gemma4uv", "gemma4ua")
+
+# ---------------------------------------------------------------------------
 # Activation-clamp scalar tensor suffixes (Gemma4ClippableLinear)
 # ---------------------------------------------------------------------------
 
@@ -107,6 +119,10 @@ class Gemma4ModelCore(BaseModelCore):
     MODEL_TYPE: str    = "gemma4"
     REQUIRES_BLOB: bool = False
     STATUS: str        = "stable"
+
+    # METADAT
+    _unified = False
+
 
     @classmethod
     #@override
@@ -219,6 +235,8 @@ class Gemma4ModelCore(BaseModelCore):
 
     #@override
     def get_kv_renames(self) -> dict[str, str]:
+        if self._unified:
+            return {}
         a = self.arch
         return {
             "clip.vision.block_count":                  f"{a}.vision.block_count",
@@ -341,7 +359,7 @@ class Gemma4ModelCore(BaseModelCore):
                 writer.add_uint32(ffl_fqn, int(_read_scalar(llm_fields, ffl_fqn)))
 
         # ── Vision KV (mmproj + hardcoded) ─────────────────────────────────
-        if args.vision:
+        if args.vision and not self._unified:
             # scale_factor: Go converter defaults to 3 when absent
             # clip.vision.pooling_kernel_size is the mmproj source; fall back to 3
             _scale_key = "clip.vision.pooling_kernel_size"
@@ -370,7 +388,7 @@ class Gemma4ModelCore(BaseModelCore):
             writer.add_uint32(f"{a}.vision.num_channels", num_channels)
 
         # ── Audio KV (mmproj, conditional — E2B/E4B only) ──────────────────
-        if args.audio:
+        if args.audio and not self._unified:
             _audio_kv: list[tuple[str, str, str]] = [
                 # (mmproj clip.audio.* key,  output fqn,  type)
                 ("clip.audio.attention.head_count",
@@ -419,10 +437,17 @@ class Gemma4ModelCore(BaseModelCore):
                 int(_read_scalar(llm_fields, "tokenizer.ggml.eos_token_id")),
             )
 
-        for str_key in ("tokenizer.ggml.model", "tokenizer.ggml.pre"):
+        # Replace the conditional str_key loop with fallback:
+        for str_key, fallback in (
+            ("tokenizer.ggml.model", "llama"),
+            ("tokenizer.ggml.pre",   "gemma4"),
+        ):
             if str_key in llm_fields:
                 f = llm_fields[str_key]
                 writer.add_string(str_key, bytes(f.parts[f.data[0]]).decode("utf-8"))
+            else:
+                writer.add_string(str_key, fallback)
+                print(f"  NOTE: {str_key} absent — injecting fallback '{fallback}'")
 
         for arr_key in ("tokenizer.ggml.scores", "tokenizer.ggml.token_type"):
             if arr_key in llm_fields:
@@ -565,6 +590,8 @@ class Gemma4ModelCore(BaseModelCore):
         ]
         if mmproj_clamps:
             print(f"  Clamp scalars in mmproj  : {len(mmproj_clamps)} (synthesis will skip these)")
+
+        self._unified = _is_unified_arch(mmproj)
 
         return encoder_tensors
 

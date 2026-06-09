@@ -175,9 +175,9 @@ class Gemma4ModelCore(BaseModelCore):
     # I need to look for unified arches (Gemma4 12B)
     # ---------------------------------------------------------------------------
 
-    def _is_unified_arch(self, mmproj_fields: dict) -> bool:
+    def _is_unified_arch(self, mmproj: dict) -> bool:
         """12B unified arch uses gemma4uv/gemma4ua projector types."""
-        ptype = mmproj_fields.fields.get("clip.vision.projector_type")
+        ptype = mmproj.fields.get("clip.vision.projector_type")
         if ptype is None:
             return False
         val = bytes(ptype.parts[ptype.data[0]]).decode("utf-8")

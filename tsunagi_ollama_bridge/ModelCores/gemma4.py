@@ -58,18 +58,6 @@ from .base import (
 )
 
 # ---------------------------------------------------------------------------
-# I need to look for unified arches (Gemma4 12B)
-# ---------------------------------------------------------------------------
-
-def _is_unified_arch(self, mmproj_fields: dict) -> bool:
-    """12B unified arch uses gemma4uv/gemma4ua projector types."""
-    ptype = mmproj_fields.get("clip.vision.projector_type")
-    if ptype is None:
-        return False
-    val = bytes(ptype.parts[ptype.data[0]]).decode("utf-8")
-    return val in ("gemma4uv", "gemma4ua")
-
-# ---------------------------------------------------------------------------
 # Activation-clamp scalar tensor suffixes (Gemma4ClippableLinear)
 # ---------------------------------------------------------------------------
 
@@ -182,6 +170,18 @@ class Gemma4ModelCore(BaseModelCore):
                 "ERROR: gemma4 requires at least one of --vision or --audio; "
                 "needs something to merge, can be both."
             )
+
+    # ---------------------------------------------------------------------------
+    # I need to look for unified arches (Gemma4 12B)
+    # ---------------------------------------------------------------------------
+
+    def _is_unified_arch(self, mmproj_fields: dict) -> bool:
+        """12B unified arch uses gemma4uv/gemma4ua projector types."""
+        ptype = mmproj_fields.get("clip.vision.projector_type")
+        if ptype is None:
+            return False
+        val = bytes(ptype.parts[ptype.data[0]]).decode("utf-8")
+        return val in ("gemma4uv", "gemma4ua")
 
     # ── KV drop set ──────────────────────────────────────────────────────────
 
